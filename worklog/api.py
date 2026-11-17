@@ -327,7 +327,7 @@ def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date
     cur = dfrom
     while cur <= dto:
         ds = cur.isoformat()
-        if cur.weekday() < 5 and ds not in daily and cur <= today:
+        if cur.weekday() < 5 and ds not in daily and cur <= today and (today - cur).days <= 14:
             achievements.setdefault(ds, []).append(
                 {"key": "idle", "icon": "🐟", "label": "摸鱼", "detail": "这天一行代码都没动"}
             )
@@ -402,13 +402,19 @@ def list_harnesses(con: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def list_projects(con: sqlite3.Connection) -> list[dict]:
+def list_projects(con: sqlite3.Connection, harness: str | None = None) -> list[dict]:
+    """项目清单。给了 harness 就只列出来源下有数据的项目，避免选完空转。"""
+    where = "WHERE p.id != ?"
+    params: list = [MISC_ID]
+    if harness:
+        where += " AND w.harness = ?"
+        params.append(harness)
     rows = con.execute(
-        """SELECT p.id, p.name, p.color, COUNT(w.id) AS units
+        f"""SELECT p.id, p.name, p.color, COUNT(w.id) AS units
            FROM project p LEFT JOIN work_unit w ON w.project_id=p.id
-           WHERE p.id != ?
+           {where}
            GROUP BY p.id HAVING units > 0 ORDER BY units DESC""",
-        (MISC_ID,),
+        params,
     ).fetchall()
     items = [dict(r) for r in rows]
     total = sum(x["units"] for x in items)
@@ -438,9 +444,10 @@ class Handler(BaseHTTPRequestHandler):
         qs = urllib.parse.parse_qs(parsed.query)
 
         if path == "/api/projects":
+            h = (qs.get("harness") or [None])[0] or None
             con = db.connect()
             try:
-                return self._json({"projects": list_projects(con)})
+                return self._json({"projects": list_projects(con, h)})
             finally:
                 con.close()
 

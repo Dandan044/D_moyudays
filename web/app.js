@@ -463,17 +463,28 @@ function renderGantt(p) {
     </div>
   </foreignObject>`;
   // ---- 成就行（表头下方）：emoji + 整列热区 ----
+  const BADGE_COLOR = {
+    sunrise: "#FAC775", early: "#EF9F27", late: "#F0997B", night: "#85B7EB",
+    marathon: "#5DCAA5", longhaul: "#1D9E75", heavy: "#AFA9EC", burst: "#7F77DD",
+    weekend: "#97C459", multi: "#ED93B1", week7: "#FAC775", idle: "#888780",
+  };
   cols.forEach((d) => {
     const { x, w } = pos[d.date];
     const list = (p.achievements || {})[d.date] || [];
-    if (list.length && w >= 12) {
-      const show = list.slice(0, Math.max(1, Math.floor((w - 4) / 13)));
-      const totalW = show.length * 13;
-      const bx = x + Math.max(1, (w - totalW) / 2);
-      show.forEach((b, i) => {
-        s += `<text x="${bx + i * 13 + 6}" y="${achTop + 21}" font-size="11.5" text-anchor="middle"
-          font-family="'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif">${b.icon}</text>`;
-      });
+    if (list.length && w >= 8) {
+      if (w < 20) {
+        // 列太窄时 emoji 会糊成一条，退化成小色块，颜色取当天最重要的那个成就
+        const top = list[0];
+        s += `<rect x="${x + w / 2 - 1.8}" y="${achTop + 13}" width="3.6" height="3.6" rx="1" fill="${BADGE_COLOR[top.key] || "#888"}"/>`;
+      } else {
+        const show = list.slice(0, Math.max(1, Math.floor((w - 4) / 13)));
+        const totalW = show.length * 13;
+        const bx = x + Math.max(1, (w - totalW) / 2);
+        show.forEach((b, i) => {
+          s += `<text x="${bx + i * 13 + 6}" y="${achTop + 21}" font-size="11.5" text-anchor="middle"
+            font-family="'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif">${b.icon}</text>`;
+        });
+      }
     }
     // 整列热区：不用对准图标
     s += `<rect class="ach-hit" x="${x}" y="${achTop + 2}" width="${Math.max(w - 1, 5)}" height="24" fill="transparent" data-day="${d.date}"/>`;
@@ -847,14 +858,20 @@ async function loadHarnesses() {
 
 async function loadProjects() {
   try {
-    const res = await fetch("/api/projects");
+    const url = "/api/projects" + (state.harness ? `?harness=${encodeURIComponent(state.harness)}` : "");
+    const res = await fetch(url);
     const data = await res.json();
     const sel = $("projSel");
     sel.innerHTML = data.projects
       .map((p) => `<option value="${esc(p.id)}">${esc(p.name)}（${p.units}）</option>`)
       .join("");
-    if ([...sel.options].some((o) => o.value === state.project)) sel.value = state.project;
-    else if (sel.options.length) state.project = sel.value;
+    // 换了来源后，原来选的项目可能没数据了 —— 回退到「全部项目」
+    if ([...sel.options].some((o) => o.value === state.project)) {
+      sel.value = state.project;
+    } else {
+      sel.value = "all";
+      state.project = "all";
+    }
   } catch (e) {
     /* 忽略，主视图还能用 */
   }
@@ -875,7 +892,8 @@ $("harnSel").addEventListener("change", (e) => {
   state.harness = e.target.value;
   state.expanded.clear();
   state.open.clear();
-  load();
+  // 项目列表要跟着来源重算，否则会列出该来源下根本没数据的项目
+  loadProjects().then(load);
 });
 
 $("projSel").addEventListener("change", (e) => {
