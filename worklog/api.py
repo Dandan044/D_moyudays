@@ -370,6 +370,9 @@ def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date
         "top_days": [{"date": d, "n": n} for d, n in top_days],
         "hours": round(sum(v["span"] for v in daily.values()), 1),
         "lines": sum(u["additions"] + u["deletions"] for u in units),
+        "latest_day": (
+            con.execute(f"SELECT MAX(end_day) FROM work_unit WHERE {scope_sql}", tuple(scope_args)).fetchone() or [None]
+        )[0],
         "last_scan": (
             con.execute("SELECT value FROM meta WHERE key='last_scan_at'").fetchone() or [None]
         )[0],

@@ -385,8 +385,13 @@ function renderGantt(p) {
   s += `<line x1="${labelW - 52}" y1="0" x2="${labelW - 52}" y2="${H}" stroke="${COL.grid}" stroke-width="0.5"/>`;
 
   if (!rows.length) {
-    s += `<text x="${labelW + 12}" y="${headerH + 26}" font-size="12" fill="${COL.head}">这段时间没有记录</text>`;
-  
+    const latest = p.summary && p.summary.latest_day;
+    const outside = latest && latest < p.range.from;
+    const msg = outside
+      ? `这段时间没有记录　·　最近一次是 ${fmt(latest)}，换个更大的时间窗`
+      : "这段时间没有记录";
+    s += `<text x="${labelW + 12}" y="${headerH + 26}" font-size="12" fill="${COL.head}">${esc(msg)}</text>`;
+    box.innerHTML = s + "</svg>";   // 必须写回：否则切到没数据的来源时，甘特会留着上一次的内容
     return;
   }
 
