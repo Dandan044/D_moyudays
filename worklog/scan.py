@@ -204,6 +204,40 @@ def scan(verbose: bool = True) -> dict:
             for r in con.execute("SELECT id, summary, detail FROM work_unit")
             if r["summary"] or r["detail"]
         }
+        # ---- 其它 harness 导入的会话（Claude Code / Codex / dsh …）----
+        for r in con.execute("SELECT * FROM external_session"):
+            sessions.setdefault(
+                r["session_id"],
+                {
+                    "id": r["session_id"],
+                    "cwd": r["cwd"],
+                    "title": r["title"] or f"{r['source']} 会话",
+                    "created_at": r["start_ts"] or 0,
+                    "updated_at": r["end_ts"] or 0,
+                    "last_activity_at": r["end_ts"],
+                    "model": r["source"],
+                    "is_playground": 0,
+                    "external": True,
+                },
+            )
+        for r in con.execute("SELECT * FROM event WHERE source != 'changes'"):
+            if not r["session_id"]:
+                continue
+            sig = json.loads(r["signal"] or "{}")
+            changes.append(
+                {
+                    "conv": r["session_id"],
+                    "req": r["source_ref"] or "",
+                    "ts": r["ts"],
+                    "day": r["day"],
+                    "file": sig.get("file") or "",
+                    "action": sig.get("action") or "edit",
+                    "add": int(sig.get("additions") or 0),
+                    "del": int(sig.get("deletions") or 0),
+                    "detail": None,
+                }
+            )
+
         con.execute("DELETE FROM artifact")
         con.execute("DELETE FROM work_unit")
         con.execute("DELETE FROM session_block")

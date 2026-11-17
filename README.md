@@ -1,6 +1,8 @@
 # worklog
 
-把本机 workbuddy 的历史记录整理成一张能看懂的工作记录：**哪天在哪个项目上做了什么事、连续几天、产出多少**。
+把本机**各个 AI 编程 harness** 留下的工作痕迹整理成一张能看懂的工作记录：**哪天在哪个项目上做了什么事、连续几天、产出多少**。
+
+内置 workbuddy 的解析；Claude Code、Codex、Cursor、dsh 等由模型在执行时现场识别并归一导入。
 
 纯本地、只读 workbuddy 数据、零第三方依赖（只用 Python 标准库）。
 
@@ -19,8 +21,9 @@ git clone https://github.com/Dandan044/D_moyudays.git && cd D_moyudays && python
 ## 它怎么工作
 
 ```
-~/.workbuddy/changes-index/*.json   每次请求改了哪些文件、增删多少行
-~/.workbuddy/workbuddy.db           会话标题、cwd、时间（只读打开）
+~/.workbuddy/changes-index/*.json    每次请求改了哪些文件、增删多少行
+~/.workbuddy/workbuddy.db            会话标题、cwd、时间（只读打开）
+~/.claude  ~/.codex  ~/.cursor …     其它 harness（probe 探测 → 模型归一 → ingest 导入）
               ↓  scan
          工作段（session 内按停顿切分，跨天且 >4h 才切）
               ↓  模型判断（可选，通过 MCP）
@@ -41,6 +44,19 @@ git clone https://github.com/Dandan044/D_moyudays.git && cd D_moyudays && python
 - **工作时段分布**：24 小时柱状，看一天里集中在几点
 - **密度日历**：近 12 周每天的热度
 - **卡片**：每个任务段一张，点开是「为什么做 / 做了什么 / 现在的状态」
+
+## 接其它 harness
+
+```bash
+python -m worklog.cli probe                  # 探测本机有哪些 harness 目录
+python -m worklog.cli ingest --file x.json   # 把解析结果导入（自动重扫）
+```
+
+`probe` 只负责"告诉他有什么"，格式判断交给执行它的模型：读样本、认字段、归一成统一事件。
+详细流程写在 [SKILL.md](SKILL.md) 的「多 harness」一节——**那里是给人/AI 看的操作手册，不是装饰**。
+
+导入的会话存在 `external_session` 表，参与后续所有聚合（项目归属、切段、分组、成就），
+和 workbuddy 记录没有区别。`(source, source_ref)` 幂等，重复导入无副作用。
 
 ## 接入 harness（MCP）
 

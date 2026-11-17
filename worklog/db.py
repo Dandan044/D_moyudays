@@ -72,6 +72,16 @@ CREATE TABLE IF NOT EXISTS artifact (
 
 CREATE INDEX IF NOT EXISTS idx_art_wu ON artifact(work_unit_id);
 
+CREATE TABLE IF NOT EXISTS external_session (
+    session_id  TEXT PRIMARY KEY,
+    source      TEXT NOT NULL,
+    cwd         TEXT,
+    title       TEXT,
+    start_ts    INTEGER,
+    end_ts      INTEGER,
+    imported_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS session_block (
     block_id    TEXT PRIMARY KEY,
     session_id  TEXT NOT NULL,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import sys
 
 from . import api, db, scan as scan_mod
 
@@ -25,6 +26,24 @@ def cmd_init(args) -> None:
     else:
         print(f"发现 {res['projects']} 个项目 → {res['path']}")
         print(f"  会话 {res['sessions']} 个 · git 仓库 {res['repos']} 个 · 普通目录 {res['loose']} 个")
+
+
+def cmd_probe(args) -> None:
+    from . import harness
+
+    print(json.dumps(harness.probe(), ensure_ascii=False, indent=1))
+
+
+def cmd_ingest(args) -> None:
+    from . import harness
+
+    if args.file:
+        payload = json.loads(open(args.file, encoding="utf-8").read())
+    else:
+        payload = json.load(sys.stdin)
+    res = harness.ingest(payload)
+    print(f"导入 {res['source']}：{res['sessions']} 个会话 / {res['events']} 条事件")
+    scan_mod.scan(verbose=True)
 
 
 def cmd_scan(args) -> None:
@@ -76,6 +95,13 @@ def main(argv: list[str] | None = None) -> None:
     p_init.add_argument("--force", action="store_true", help="覆盖已有配置")
     p_init.add_argument("--workbuddy", default=None, help="workbuddy 数据目录，默认 ~/.workbuddy")
     p_init.set_defaults(func=cmd_init)
+
+    p_probe = sub.add_parser("probe", help="探测本机其它 harness 目录（输出 JSON 供模型判断）")
+    p_probe.set_defaults(func=cmd_probe)
+
+    p_ing = sub.add_parser("ingest", help="导入其它 harness 的会话事件（JSON）")
+    p_ing.add_argument("--file", default=None, help="JSON 文件；省略则从 stdin 读")
+    p_ing.set_defaults(func=cmd_ingest)
 
     p_scan = sub.add_parser("scan", help="扫描 workbuddy 本地记录并重建派生层")
     p_scan.set_defaults(func=cmd_scan)
