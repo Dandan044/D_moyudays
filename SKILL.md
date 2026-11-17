@@ -23,27 +23,49 @@ description: 把本机各个 AI 编程 harness（Codex、Claude Code、Cursor、
 
 确认了再往下走。**如果 `~/.workbuddy` 根本不存在，那不是错误，跳过 workbuddy 那一路就行。**
 
-## 第二步：跑起来
+## 第二步：让工具把证据摆出来
+
+```bash
+python -m worklog.cli probe
+```
+
+**这个命令不认 harness 名字。** 它扫家目录、`AppData/Roaming`、`AppData/Local`，把每个目录的文件数、
+jsonl 数量、大小、最近修改时间、以及 jsonl 样本的字段轮廓列出来，分成两组：
+
+- `with_jsonl`：有会话日志的目录，按日志数量排序——**harness 几乎一定在这里**
+- `others_sample`：只是文件多的目录，通常不是，忽略即可
+
+想知道某个目录到底是什么，直接深入：
+
+```bash
+python -m worklog.cli probe ~/.qoder-cli
+```
+
+### 判断靠证据，不靠名字
+
+不要因为「没见过这个名字」就跳过。真实情况是：除了 claude/cursor/codex，还有
+`.qoder-cli`、`.gientech-agent`、`.qoderworkcn` 这类你大概率没听过的——它们照样是 harness，
+照样有完整的会话记录。**看 jsonl 数量、看 sample 里的 keys**，那才是判断依据。
+
+一个目录像 harness 的信号：
+
+- 有 `*.jsonl`，每行是一个带 `timestamp` 的对象
+- 有 `sessions/`、`projects/`、`chats/`、`tasks/` 这类子目录
+- 子目录名是 UUID 或 workspace 路径的变形
+
+## 第三步：跑起来
 
 ```bash
 python run.py
 ```
 
-它会自动：解析所有能被识别的 harness → 写入本地库 → 发现项目 → 扫描 → 起服务（127.0.0.1:8720）→ 开浏览器。
+它会自动处理**内置能识别的** harness（workbuddy 原生、claude-code 精确解析、其余通用 JSONL 启发式），
+写入本地库 → 发现项目 → 扫描 → 起服务（127.0.0.1:8720）→ 开浏览器。
 
-不需要 pip install，Python 3.10+，零第三方依赖。
+**内置解析只是加速器，不是覆盖率保证。** 你刚在 `probe` 里看到的那些目录，
+如果 `run.py` 没导入，就由你手工接手——见下一步。
 
-**内置解析器**（`worklog/sources.py`）：
-
-| harness | 解析方式 |
-|---|---|
-| workbuddy | 原生（读 `changes-index` + `workbuddy.db`） |
-| claude-code | 精确解析 `tool_use` 的 `Edit`/`Write`，用 old/new 行数差估增删 |
-| codex / cursor / trae / continue | 通用 JSONL 启发式：找时间戳 + 文件路径 |
-
-启发式不保证准。跑完要检查：**如果某个你自己明明很熟的 harness 导入结果是 0，说明解析没命中，接下来手工接管。**
-
-## 第三步：手工接管（自动解析失败时）
+## 第四步：手工接管（自动解析没覆盖到的）
 
 ```bash
 python -m worklog.cli probe
@@ -90,7 +112,7 @@ python -m worklog.cli ingest --file /tmp/xxx.json
 
 `(source, source_ref)` 幂等，重复导入无副作用。
 
-## 第四步：回报
+## 第五步：回报
 
 告诉用户：**哪几个 harness、各多少会话、时间范围**。用户最关心的是"我以前在 X 里干的活也进来了吗"。
 

@@ -50,7 +50,8 @@ def main() -> None:
 
     threading.Timer(1.2, lambda: webbrowser.open(URL)).start()
     print(f"\n打开 {URL}   （Ctrl+C 停止）")
-    print("如果页面缺了你常用工具的数据，让它跑：python -m worklog.cli probe 再手工 ingest\n")
+    print("内置解析只覆盖已知格式。跑 python -m worklog.cli probe 看本机还有哪些 harness，")
+    print("没被导入的由你读样本、归一、再 ingest（见 SKILL.md 第四步）\n")
     api.serve("127.0.0.1", PORT)
 
 

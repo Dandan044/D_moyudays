@@ -29,9 +29,9 @@ def cmd_init(args) -> None:
 
 
 def cmd_probe(args) -> None:
-    from . import harness
+    from . import probe as probe_mod
 
-    print(json.dumps(harness.probe(), ensure_ascii=False, indent=1))
+    print(json.dumps(probe_mod.probe(args.path), ensure_ascii=False, indent=1))
 
 
 def cmd_ingest(args) -> None:
@@ -96,7 +96,8 @@ def main(argv: list[str] | None = None) -> None:
     p_init.add_argument("--workbuddy", default=None, help="workbuddy 数据目录，默认 ~/.workbuddy")
     p_init.set_defaults(func=cmd_init)
 
-    p_probe = sub.add_parser("probe", help="探测本机其它 harness 目录（输出 JSON 供模型判断）")
+    p_probe = sub.add_parser("probe", help="探索目录里有什么（给模型判断用，不预设 harness 名单）")
+    p_probe.add_argument("path", nargs="?", default=None, help="指定目录；省略则扫家目录与 AppData")
     p_probe.set_defaults(func=cmd_probe)
 
     p_ing = sub.add_parser("ingest", help="导入其它 harness 的会话事件（JSON）")

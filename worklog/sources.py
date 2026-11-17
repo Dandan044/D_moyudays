@@ -1,7 +1,13 @@
-"""各 harness 的内置解析器。
+"""已知格式的加速器 —— 不是覆盖率保证。
 
-原则：能确定解析的才内置（claude-code 已验证），格式不确定的用启发式兜底，
-解析不出来的交给调用它的模型现场处理——probe 会标出来。
+harness 层出不穷，这里永远追不全：你熟悉 Claude Code 的字段，未必认识
+`.qoder-cli` 或公司内部 agent 的格式。所以：
+
+- 内置只放**已验证**的精确解析（claude-code）和通用启发式（时间戳 + 文件路径）
+- 解析失败的静默跳过，不报错
+- 真正的兜底是调用它的模型：`worklog.cli probe` 摆证据，模型判断，`ingest` 写库
+
+换句话说，这段代码的作用是「省掉一部分手工活」，不是「保证覆盖所有工具」。
 
 统一产出 ingest 需要的格式：
     {"source": ..., "sessions": [{"session_id", "cwd", "title", "events": [...]}]}
@@ -125,7 +131,7 @@ def claude_code(home: pathlib.Path) -> dict | None:
 
 # ---------------- Codex / 通用 JSONL ----------------
 def generic_jsonl(home: pathlib.Path, source: str, rel: str) -> dict | None:
-    """格式未知时的启发式：找时间戳 + 文件路径，按文件分组成会话。"""
+    """格式未知时的启发式：找时间戳 + 文件路径。覆盖率有限，仅作兜底。"""
     root = home / rel.lstrip("~/")
     if not root.exists():
         return None
@@ -187,7 +193,7 @@ AUTO_SOURCES = [
 
 
 def autoload(home: pathlib.Path) -> dict[str, dict]:
-    """把所有能自动解析的 harness 跑一遍。解析失败的静默跳过，由 agent 兜底。"""
+    """跑一遍已知格式。跑不出来的交给模型——本函数不追求覆盖率。"""
     out: dict[str, dict] = {}
     for name, fn in AUTO_SOURCES:
         try:
