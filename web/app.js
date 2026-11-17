@@ -862,10 +862,12 @@ async function loadProjects() {
 
 async function load() {
   try {
-    const res = await fetch(`/api/project?project=${encodeURIComponent(state.project)}&days=${state.days}`);
+    const qs = `project=${encodeURIComponent(state.project)}&days=${state.days}` +
+      (state.harness ? `&harness=${encodeURIComponent(state.harness)}` : "");
+    const res = await fetch(`/api/project?${qs}`);
     render(await res.json());
   } catch (e) {
-    $("hlMain").textContent = "读取失败：" + e.message;
+    $("hlSub").textContent = "读取失败：" + e.message;
   }
 }
 
@@ -937,6 +939,13 @@ window.addEventListener("resize", () => {
   clearTimeout(rt);
   rt = setTimeout(() => state.payload && renderGantt(state.payload), 150);
 });
+
+const hq = new URLSearchParams(location.search).get("harness");
+if (hq) {
+  state.harness = hq;
+  const sel = document.getElementById("harnSel");
+  if (sel) sel.value = hq;
+}
 
 const pq = new URLSearchParams(location.search).get("project");
 if (pq) state.project = pq;

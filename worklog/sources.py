@@ -129,6 +129,106 @@ def claude_code(home: pathlib.Path) -> dict | None:
     return {"source": "claude-code", "sessions": keep} if keep else None
 
 
+# ---------------- Cursor ----------------
+_TS_RE = None
+
+
+def cursor(home: pathlib.Path) -> dict | None:
+    """Cursor 的会话在 ~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl。
+
+    它没有独立时间字段，时间写在 user 消息正文的 <timestamp> 标签里；
+    写操作是 StrReplace / Write，只给路径不给行数，所以 additions/deletions 记 0。
+    """
+    global _TS_RE
+    import re
+
+    if _TS_RE is None:
+        _TS_RE = re.compile(r"<timestamp>\s*\w+,\s*(\w+ \d+, \d+),\s*(\d+:\d+ [AP]M)")
+    WRITE_TOOLS = {"StrReplace", "Write", "Edit", "MultiEdit", "ApplyPatch"}
+
+    root = home / ".cursor" / "projects"
+    if not root.is_dir():
+        return None
+
+    sessions = []
+    for f in root.rglob("*.jsonl"):
+        parts = str(f).split("projects")[-1].strip("\\/").split("\\")
+        slug = parts[0] if parts else ""
+        rec = {"session_id": f.stem, "cwd": _slug_to_path(slug, home), "title": None, "events": []}
+        first_ms = None
+
+        for line in _iter_jsonl(f):
+            if not rec["title"]:
+                c = (line.get("message") or {}).get("content")
+                if isinstance(c, list):
+                    for b in c:
+                        if isinstance(b, dict) and b.get("type") == "text":
+                            txt = str(b.get("text", ""))
+                            m = _TS_RE.search(txt)
+                            if m and not first_ms:
+                                first_ms = _parse_cursor_ts(m.group(1), m.group(2))
+                            if not rec["title"] and len(txt) > 20:
+                                q = txt.split("<user_query>")[-1]
+                                rec["title"] = re.sub(r"<[^>]+>", " ", q).strip()[:60]
+                            break
+
+            for b in ((line.get("message") or {}).get("content") or []):
+                if not isinstance(b, dict) or b.get("type") != "tool_use":
+                    continue
+                if b.get("name") not in WRITE_TOOLS:
+                    continue
+                inp = b.get("input") or {}
+                if isinstance(inp, str):
+                    try:
+                        inp = json.loads(inp)
+                    except json.JSONDecodeError:
+                        inp = {}
+                if not isinstance(inp, dict):
+                    inp = {}
+                fp = inp.get("path") or inp.get("file_path") or inp.get("target_file")
+                if not fp:
+                    continue
+                if b.get("name") == "Write":
+                    adds, dels = _lines(inp.get("contents") or inp.get("content")), 0
+                else:
+                    old = _lines(inp.get("old_str") or inp.get("old_string") or inp.get("search"))
+                    new = _lines(inp.get("new_str") or inp.get("new_string") or inp.get("replace"))
+                    adds, dels = ((new - old), 0) if new >= old else (0, (old - new))
+                rec["events"].append(
+                    {"ts": 0, "file": str(fp), "action": "edit", "additions": adds, "deletions": dels}
+                )
+
+        if not rec["events"]:
+            continue
+        base = first_ms or int(f.stat().st_mtime * 1000)
+        for e in rec["events"]:
+            e["ts"] = base
+        rec["title"] = rec["title"] or "Cursor 会话"
+        sessions.append(rec)
+
+    return {"source": "cursor", "sessions": sessions} if sessions else None
+
+
+def _parse_cursor_ts(day: str, hm: str) -> int | None:
+    import datetime as dt
+
+    try:
+        t = dt.datetime.strptime(f"{day} {hm}", "%b %d, %Y %I:%M %p")
+        return int(t.timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def _slug_to_path(slug: str, home: pathlib.Path) -> str:
+    """d-Dandan-LLMbox → D:////Dandan////LLMbox；匹配不到已知项目就原样返回。"""
+    if not slug:
+        return ""
+    raw = slug.replace("-", "\\")
+    if len(raw) > 2 and raw[1] == ":":
+        return raw[:1].upper() + raw[1:]
+    return slug
+
+
 # ---------------- Codex / 通用 JSONL ----------------
 def generic_jsonl(home: pathlib.Path, source: str, rel: str) -> dict | None:
     """格式未知时的启发式：找时间戳 + 文件路径。覆盖率有限，仅作兜底。"""
@@ -185,6 +285,7 @@ def _iter_jsonl(path: pathlib.Path):
 
 AUTO_SOURCES = [
     ("claude-code", lambda h: claude_code(h)),
+    ("cursor", lambda h: cursor(h)),
     ("codex", lambda h: generic_jsonl(h, "codex", "~/.codex")),
     ("cursor", lambda h: generic_jsonl(h, "cursor", "~/.cursor")),
     ("trae", lambda h: generic_jsonl(h, "trae", "~/.trae")),

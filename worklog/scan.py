@@ -18,8 +18,8 @@ from . import db, group, normalize
 
 # 活动块粒度：30 分钟没动作就算断开（只是给 LLM 看的候选，不是最终任务边界）
 BLOCK_GAP_MS = 30 * 60 * 1000
-# 尚未经 LLM 切分的会话，用这个规则兜底
-GAP_MS = 4 * 3600 * 1000
+# 已废弃：曾用 4 小时间隔猜切分点。脚本判断不了"是不是换了一件事"，
+# 现在整会话可先作为一段，切分交给 LLM（worklog_list_blocks → apply_split）。
 
 
 def _make_blocks(items: list[dict]) -> list[dict]:
@@ -285,15 +285,9 @@ def scan(verbose: bool = True) -> dict:
                     else:
                         segments.append(("", rest))
             elif raw_items:
-                groups: list[list[dict]] = []
-                for it in raw_items:
-                    same_day = bool(groups) and it["day"] == groups[-1][-1]["day"]
-                    gap_ok = bool(groups) and (it["ts"] - groups[-1][-1]["ts"]) <= GAP_MS
-                    if groups and (same_day or gap_ok):
-                        groups[-1].append(it)
-                    else:
-                        groups.append([it])
-                segments = [("", g) for g in groups]
+                # 不做时间切分：脚本猜不出"换了一件事"，整会话先当一段，
+                # 由 LLM 通过 worklog_apply_split 判断该切成几段。
+                segments = [("", raw_items)]
             else:
                 segments = [("", [])]
 
@@ -325,9 +319,8 @@ def scan(verbose: bool = True) -> dict:
                     base_title = f"{md} {s['title']}"
                 title, masked = normalize.mask_title(base_title, bool(proj and proj["sensitive"]))
                 no_artifacts = not items
-                is_noise = int(
-                    project_id == resolver.misc["id"] and (no_artifacts or resolver.is_noise_title(s["title"]))
-                )
+                # 只按"没能归到任何项目"来标记，标题像不像杂事交给 LLM 归组时判断
+                is_noise = int(project_id == resolver.misc["id"] and no_artifacts)
                 units.append(
                     {
                         "id": uid,

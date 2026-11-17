@@ -48,10 +48,25 @@ def main() -> None:
     # 3. 统一扫描（workbuddy 有就一起算，没有也不影响）
     scan.scan()
 
+    # 3.5 汇报「还差什么」——机械部分到此为止
+    con = db.connect()
+    pending = con.execute(
+        "SELECT COUNT(DISTINCT session_id) FROM work_unit"
+        " WHERE session_id NOT IN (SELECT session_id FROM session_split)"
+    ).fetchone()[0]
+    total = con.execute("SELECT COUNT(*) FROM work_unit").fetchone()[0]
+    con.close()
+
     threading.Timer(1.2, lambda: webbrowser.open(URL)).start()
-    print(f"\n打开 {URL}   （Ctrl+C 停止）")
-    print("内置解析只覆盖已知格式。跑 python -m worklog.cli probe 看本机还有哪些 harness，")
-    print("没被导入的由你读样本、归一、再 ingest（见 SKILL.md 第四步）\n")
+    print(f"\n打开 {URL}   （Ctrl+C 停止）\n")
+    print("—— 以下是机械扫描的结果，可读性还差得远 ——")
+    print(f"  {total} 个工作单元，其中 {pending} 个会话还没切分（现在是一个会话算一条）")
+    print("  要继续，你得自己做这几件事（脚本替不了）：")
+    print("    1) python -m worklog.cli probe     看本机还有哪些 harness 没导进来")
+    print("    2) 没覆盖的格式：读样本 → 现场写转换脚本 → ingest")
+    print("    3) 切段：worklog_list_sessions → list_blocks → apply_split")
+    print("    4) 归组：worklog_list_units → apply_groups")
+    print("    5) 写详情：worklog_set_detail\n")
     api.serve("127.0.0.1", PORT)
 
 

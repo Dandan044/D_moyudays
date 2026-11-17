@@ -1,104 +1,72 @@
 ---
 name: worklog
-description: 把本机各个 AI 编程 harness（Codex、Claude Code、Cursor、Trae、workbuddy、dsh…）的会话与文件变更记录整理成可视化工作记录（甘特图、卡片、成就、时段分布），纯本地运行，零第三方依赖。当用户说"整理我的工作记录""看看我最近做了什么""这几个工具我都用过，合起来看看"时使用。
+description: 把本机各个 AI 编程 harness（Codex、Claude Code、Cursor、Trae、workbuddy、qoder…）的会话与文件变更整理成可视化工作记录。工具只提供数据模型、网页和读写接口，所有需要判断的环节——找目录、解析格式、切分任务、归组、写摘要——都由你在执行时现场完成。
 ---
 
 # worklog
 
-把开发者在**各个 AI harness 里留下的工作痕迹**整理成一张工作记录网站。
+把开发者在各个 AI harness 里留下的工作痕迹，整理成一张能看懂的工作记录网站。
 
-> **这个工具不预设你用的是哪家 harness。** workbuddy 只是内置解析的其中一家，
-> 任何有本地日志的 harness 都能接进来——包括你此刻运行所在的那一个。
+## 先明确一件事
 
-## 第一步：先看你自己
+**这个项目不替你做判断。** 它提供的是：
 
-你（执行这段的 agent）正跑在某个 harness 里：Codex、Claude Code、Cursor、Trae、workbuddy……
+- 一套数据模型（event → 工作单元 → 分组）
+- 一个网页（甘特 / 卡片 / 成就 / 时段分布）
+- 几个读写接口（`probe` 探索、`ingest` 导入、MCP 的切段/归组/写摘要）
 
-**你自己的记录就在你自己的目录里，那是优先级最高的数据源。** 不要因为「README 里第一个提到 workbuddy」就默认去找 workbuddy——如果你的宿主是 Codex，`~/.codex` 下才是你这几天真正干的事；宿主是 Claude Code，就去看 `~/.claude/projects`。
+**它不提供**「解析各 harness 的脚本」「切分任务的规则」「判断哪些是同一件事的逻辑」——这些恰恰是脚本做不好、只有你能做好的部分。
 
-先回答自己两个问题：
+所以 `python run.py` 跑完只是"有了一个空架子 + 起了服务"，**真正的整理工作在你手上**。不要看到页面有东西就以为完事了，那只是机械扫描的结果。
 
-1. 我这个 harness 把会话存在哪？（`~/.codex` / `~/.claude` / `~/.cursor` / AppData… ）
-2. 它记录文件改动吗？记录在哪个字段（tool 调用的 `file_path`、diff、还是只有对话）？
-
-确认了再往下走。**如果 `~/.workbuddy` 根本不存在，那不是错误，跳过 workbuddy 那一路就行。**
-
-## 第二步：让工具把证据摆出来
-
-```bash
-python -m worklog.cli probe
-```
-
-**这个命令不认 harness 名字。** 它扫家目录、`AppData/Roaming`、`AppData/Local`，把每个目录的文件数、
-jsonl 数量、大小、最近修改时间、以及 jsonl 样本的字段轮廓列出来，分成两组：
-
-- `with_jsonl`：有会话日志的目录，按日志数量排序——**harness 几乎一定在这里**
-- `others_sample`：只是文件多的目录，通常不是，忽略即可
-
-想知道某个目录到底是什么，直接深入：
-
-```bash
-python -m worklog.cli probe ~/.qoder-cli
-```
-
-### 判断靠证据，不靠名字
-
-不要因为「没见过这个名字」就跳过。真实情况是：除了 claude/cursor/codex，还有
-`.qoder-cli`、`.gientech-agent`、`.qoderworkcn` 这类你大概率没听过的——它们照样是 harness，
-照样有完整的会话记录。**看 jsonl 数量、看 sample 里的 keys**，那才是判断依据。
-
-一个目录像 harness 的信号：
-
-- 有 `*.jsonl`，每行是一个带 `timestamp` 的对象
-- 有 `sessions/`、`projects/`、`chats/`、`tasks/` 这类子目录
-- 子目录名是 UUID 或 workspace 路径的变形
-
-## 第三步：跑起来
+## 第一步：跑起来（机械部分）
 
 ```bash
 python run.py
 ```
 
-它会自动处理**内置能识别的** harness（workbuddy 原生、claude-code 精确解析、其余通用 JSONL 启发式），
-写入本地库 → 发现项目 → 扫描 → 起服务（127.0.0.1:8720）→ 开浏览器。
+它会：建库 → 扫描 workbuddy（如果这台机器有）→ 发现项目 → 起服务（127.0.0.1:8720）→ 开浏览器。
 
-**内置解析只是加速器，不是覆盖率保证。** 你刚在 `probe` 里看到的那些目录，
-如果 `run.py` 没导入，就由你手工接手——见下一步。
+跑完你会看到一个只有「会话」没有「任务段」的页面——因为切分还没发生。这正是下一步要做的。
 
-## 第四步：手工接管（自动解析没覆盖到的）
+## 第二步：找出这台机器上有什么
 
 ```bash
 python -m worklog.cli probe
 ```
 
-输出每个目录的文件数、JSONL 字段轮廓。然后：
+它扫家目录、`AppData/Roaming`、`AppData/Local`，把每个目录的文件数、jsonl 数量、大小、最近修改时间、
+**以及 jsonl 样本的字段名**列出来，分成两组：
+
+- `with_jsonl`：有会话日志的目录，按日志数排序——**harness 几乎一定在这里**
+- `others_sample`：只是文件多的目录，通常忽略
+
+想看某个目录内部：`python -m worklog.cli probe ~/.codex`
+
+**判断靠证据不靠名字。** 除了 claude/cursor/codex，还可能存在 `.qoder-cli`、`.gientech-agent` 这类你
+没听过的——它们照样是 harness，照样有完整记录。看 jsonl 数量、看 sample 里的 keys。
+
+## 第三步：自己写解析脚本
+
+**不要指望内置解析器覆盖你的宿主。** 仓库里 `sources.py` 只放了两三个已验证格式当参考，
+它不知道 Codex 的字段怎么排，也不认识你公司内部工具的结构。
+
+正确做法是：读样本 → 现场写一小段转换代码 → 输出统一格式 → 导入。
 
 ```bash
-head -n 3 <某个会话.jsonl>     # 直接读，别猜字段名
+head -n 5 <某个会话.jsonl>       # 先看真实结构，别猜
 ```
 
-从样本里认出三样东西：
+然后写个临时脚本（Python 即可），把该 harness 的记录转成：
 
-| 需要什么 | 常见字段 |
-|---|---|
-| 时间戳 | `timestamp` / `ts` / `time` / `created_at` / `createdAt` |
-| 工作目录 | `cwd` / `projectPath` / `workspace` / `workspaceFolder` |
-| 文件变更 | tool 调用里的 `file_path` / `path`，或 `files` / `changes` 数组 |
-
-归一成统一格式后导入：
-
-```bash
-python -m worklog.cli ingest --file /tmp/xxx.json
-```
-
-```json
+```python
 {
-  "source": "codex",
+  "source": "codex",                    # 这个 harness 的名字，进「来源」筛选器
   "sessions": [
     {
-      "session_id": "<会话 id，没有就自己生成稳定的>",
-      "cwd": "D:/work/proj",
-      "title": "重构登录流程",
+      "session_id": "<稳定 id>",
+      "cwd": "D:/work/proj",            # 没有就留空，项目归属会退回按文件路径判断
+      "title": "重构登录流程",           # 一句话概括这次会话在干嘛
       "events": [
         {"ts": 1763350000000, "file": "D:/work/proj/src/login.ts",
          "action": "edit", "additions": 87, "deletions": 12}
@@ -108,50 +76,105 @@ python -m worklog.cli ingest --file /tmp/xxx.json
 }
 ```
 
-只记录对话、不记录文件改动的 harness，用**会话起止时间当活动证据**：`file` 留空、行数记 0，图上会显示成空心条，仍然能反映"那时候在干活"。
-
-`(source, source_ref)` 幂等，重复导入无副作用。
-
-## 第五步：回报
-
-告诉用户：**哪几个 harness、各多少会话、时间范围**。用户最关心的是"我以前在 X 里干的活也进来了吗"。
-
-导入的数据会出现在顶栏的「来源」筛选器里，可与「项目」任意组合，选「全部来源」就是总览。
-
-## 其它命令
-
-| 想做什么 | 命令 |
-|---|---|
-| 探测 harness 目录 | `python -m worklog.cli probe` |
-| 导入外部记录 | `python -m worklog.cli ingest --file x.json` |
-| 重新发现项目 | `python -m worklog.cli init --force` |
-| 只重扫 | `python -m worklog.cli scan` |
-| 终端看报告 | `python -m worklog.cli report --project X --days 14` |
-| 起服务 | `python -m worklog.cli serve` |
-| MCP 服务 | `python -m worklog.cli mcp` |
-
-## 作为 MCP 接入
-
-```json
-"worklog": {
-  "command": "<python 绝对路径>",
-  "args": ["-m", "worklog.cli", "mcp"],
-  "cwd": "<本仓库绝对路径>"
-}
+```bash
+python -m worklog.cli ingest --file /tmp/codex.json      # 幂等，可反复跑
 ```
 
-工具：`list_sessions` / `list_blocks` / `apply_split`（切段）、`list_units` / `apply_groups`（归组）、`set_notes` / `set_detail`（写卡片）、`summary` / `scan`。
+几个实战经验：
 
-切段与归组**不做规则判定**，由模型判断后写回，结果落库只算一次。
+- **时间戳位置千奇百怪**：有的在 `timestamp` 字段，有的埋在消息正文的 `<timestamp>` 标签里（Cursor 就是这样），有的只有会话级 mtime
+- **行数常常没有**：`Write` 看 `contents` 行数、`StrReplace` 看 old/new 差值；都没有就记 0，图上会显示成短的条，仍然能反映"那时候在干活"
+- **cwd 不一定有**：没有就留空，项目归属会退回用 `file` 的绝对路径投票
+- **只记录对话的工具**：用会话首末时间当活动证据，`file` 留空、行数 0
 
-## 关键口径
+脚本放哪都行（`/tmp` 下就够），**不要提交进仓库**——它只对这台机器、这个版本有效。
 
-- 一个会话里跨天且停顿 > 4 小时 → 切成另一段任务（未切分的用这条兜底）
-- 一个任务段 = 一个工作单元，标题可以是模型起的那句话
-- 项目按**最长路径前缀**匹配，嵌套子仓库优先于父仓库
-- 变更行数含生成物，会出现「+4 万行」，不代表手写量
+## 第四步：切分任务段（这一步最影响观感）
+
+机械扫描出来的「一个会话」往往横跨多天干了好几件事。**用时间间隔去猜切点是不准的**，
+必须由你读内容判断。
+
+```bash
+# 1. 看哪些会话值得切
+worklog_list_sessions(unsplit_only=true)
+
+# 2. 拉某个会话的活动块
+worklog_list_blocks(session_id="...")
+
+# 3. 判断切几段、每段叫什么，写回
+worklog_apply_split(session_id="...", segments=[
+  {"title": "搭评测流水线骨架", "block_ids": ["b1","b2"]},
+  {"title": "扩样本重跑并修错行", "block_ids": ["b3","b4","b5"]},
+])
+```
+
+判断依据：
+
+- 相邻块改同一批文件 / 同一模块、日期连续 → 同一段
+- 文件集明显换到别的目录或模块 → 新段
+- 隔几天回来继续改同一批文件 → 同一任务的不同阶段，块少就合并
+- 标题要具体（「接 SynthAudioPanel 与路由」），不要「继续开发」
+
+**不做这一步，页面就是一小时一条的碎块，没有可读性。** 这是脚本永远替代不了的部分。
+
+## 第五步：归组（把同一件事的多次会话聚起来）
+
+```bash
+worklog_list_units(project="...")     # 拉任务单元
+worklog_apply_groups(project="...", groups=[
+  {"title": "TTS 读音与专有名词优化", "unit_ids": ["...", "..."]},
+])
+```
+
+判断依据：不同会话在改同一批文件、围绕同一个目标 → 同一组。
+跨 harness 也能归到一组（workbuddy 和 cursor 都在改同一个项目的那部分工作）。
+
+## 第六步：写卡片详情
+
+```bash
+worklog_set_detail(items=[{
+  "unit_id": "...",
+  "headline": "补齐词条的错误类型标签，重建审阅页并冒烟，让后续能按类型分工修",
+  "sections": [
+    {"title": "为什么做", "items": ["上一轮打标还有词条没标上，标签不全没法按类型统计"]},
+    {"title": "做了什么", "items": ["补齐打标脚本（make_labels.py —— 按问题给每条词条打类型标签）"]},
+  ],
+}])
+```
+
+写给小几天后忘光细节的自己：**先说为什么做，再说做成什么**。提到内部代号要当场解释它是干什么的。
+禁止「优化代码」「处理问题」这类空话。
+
+## 第七步：回报
+
+告诉用户：哪几个 harness、各多少会话、切出多少个任务段、归了多少组。
+
+---
+
+## 哪些事脚本做了、哪些没做
+
+| 环节 | 谁做 | 说明 |
+|---|---|---|
+| 建库、起服务、读 workbuddy | 脚本 | 机械活，不需要判断 |
+| 找 harness 目录 | 脚本给证据，**你判断** | probe 只列事实，不说"这是 harness" |
+| 解析各家格式 | **你**（现场写脚本） | 格式千差万别，内置解析器只是参考 |
+| 切分任务段 | **你** | 时间间隔猜不出"换了一件事" |
+| 归组 | **你** | 需要理解语义 |
+| 写摘要与详情 | **你** | 需要理解上下文 |
+| 项目归属、类型判定 | 脚本 | 按路径前缀和扩展名，规则明确且可预期 |
+
+## 常用命令
+
+| 命令 | 用途 |
+|---|---|
+| `python run.py` | 起服务（只做机械部分） |
+| `python -m worklog.cli probe [path]` | 看目录里有什么 |
+| `python -m worklog.cli ingest --file x.json` | 导入解析结果 |
+| `python -m worklog.cli scan` | 重扫 workbuddy |
+| `python -m worklog.cli init --force` | 重新发现项目 |
+| `python -m worklog.cli serve` | 只起服务 |
+| `python -m worklog.cli mcp` | MCP 服务（stdio） |
 
 ## 不要把 data/ 提交进仓库
 
-`data/worklog.db` 是运行产物，含本机路径与项目名，已被 `.gitignore` 排除。
-外部 harness 导入的会话存在 `external_session` 表，同样不会进仓库。
+`data/worklog.db` 含本机路径与项目名，已被 `.gitignore` 排除。解析脚本也别提交——它只对一台机器有效。
