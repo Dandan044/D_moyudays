@@ -2,7 +2,11 @@
 
 把本机**各个 AI 编程 harness** 留下的工作痕迹整理成一张能看懂的工作记录：**哪天在哪个项目上做了什么事、连续几天、产出多少**。
 
-内置 workbuddy 的解析；Claude Code、Codex、Cursor、dsh 等由模型在执行时现场识别并归一导入。
+**不预设你用哪家 harness。** workbuddy 与 Claude Code 是精确解析，Codex / Cursor / Trae / Continue 走通用 JSONL 启发式，格式未知的由执行它的模型现场识别。
+
+> 如果你是通过某个 agent 打开这个项目的：**先去看你自己所在的那个 harness 目录**。
+> 宿主是 Codex 就看 `~/.codex`，是 Claude Code 就看 `~/.claude`——那才是你最近真正干活的记录。
+> `~/.workbuddy` 不存在不是错误，跳过即可。
 
 纯本地、只读 workbuddy 数据、零第三方依赖（只用 Python 标准库）。
 
@@ -12,7 +16,7 @@
 git clone https://github.com/Dandan044/D_moyudays.git && cd D_moyudays && python run.py
 ```
 
-`run.py` 自动完成四步：发现本机项目 → 扫描记录 → 起服务 → 开浏览器（`127.0.0.1:8720`）。
+`run.py` 自动完成：解析所有能识别的 harness → 写入本地库 → 发现项目 → 扫描 → 起服务 → 开浏览器（`127.0.0.1:8720`）。
 
 不需要 `pip install`，不需要预先填任何路径。要求 Python 3.10+。
 

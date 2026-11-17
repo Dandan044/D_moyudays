@@ -91,7 +91,8 @@ def _open_source(path: pathlib.Path) -> sqlite3.Connection:
 def read_sessions(wb_home: pathlib.Path) -> dict[str, dict]:
     src = wb_home / "workbuddy.db"
     if not src.exists():
-        raise SystemExit(f"找不到 workbuddy 数据库: {src}")
+        # 这台机器可能根本没装 workbuddy：不是错误，只是这个源为空
+        return {}
     con = _open_source(src)
     con.row_factory = sqlite3.Row
     rows = con.execute(
@@ -124,6 +125,8 @@ def read_sessions(wb_home: pathlib.Path) -> dict[str, dict]:
 def read_changes(wb_home: pathlib.Path) -> list[dict]:
     """展开 changes-index，得到逐文件的变更记录。"""
     out = []
+    if not (wb_home / "changes-index").is_dir():
+        return out
     for path in sorted((wb_home / "changes-index").glob("*.json")):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))

@@ -65,8 +65,18 @@ def discover(wb_home: pathlib.Path) -> tuple[list[dict], dict]:
     repo_hits: collections.Counter = collections.Counter()
     loose_hits: collections.Counter = collections.Counter()
 
-    for s in sessions.values():
-        cwd = s.get("cwd")
+    cwds = [s.get("cwd") for s in sessions.values() if s.get("cwd")]
+    try:
+        con = db.connect()
+        cwds += [
+            r["cwd"]
+            for r in con.execute("SELECT DISTINCT cwd FROM external_session WHERE cwd IS NOT NULL")
+        ]
+        con.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+    for cwd in cwds:
         if not cwd:
             continue
         path = pathlib.Path(cwd)

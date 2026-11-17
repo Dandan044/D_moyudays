@@ -1,78 +1,84 @@
 ---
 name: worklog
-description: 把本机多个 AI 编程 harness（workbuddy、Claude Code、Codex、dsh 等）的会话与文件变更记录整理成可视化工作记录（甘特图、卡片、成就、时段分布），纯本地运行，零第三方依赖。当用户说"整理我的工作记录""看看我最近做了什么""这几个工具我都用过，合起来看看"时使用。
+description: 把本机各个 AI 编程 harness（Codex、Claude Code、Cursor、Trae、workbuddy、dsh…）的会话与文件变更记录整理成可视化工作记录（甘特图、卡片、成就、时段分布），纯本地运行，零第三方依赖。当用户说"整理我的工作记录""看看我最近做了什么""这几个工具我都用过，合起来看看"时使用。
 ---
 
 # worklog
 
 把开发者在**各个 AI harness 里留下的工作痕迹**整理成一张工作记录网站。
 
-内置 workbuddy 的解析，其它 harness 由你在执行时现场识别——见下面「多 harness」一节。
+> **这个工具不预设你用的是哪家 harness。** workbuddy 只是内置解析的其中一家，
+> 任何有本地日志的 harness 都能接进来——包括你此刻运行所在的那一个。
 
-## 一句话启动
+## 第一步：先看你自己
+
+你（执行这段的 agent）正跑在某个 harness 里：Codex、Claude Code、Cursor、Trae、workbuddy……
+
+**你自己的记录就在你自己的目录里，那是优先级最高的数据源。** 不要因为「README 里第一个提到 workbuddy」就默认去找 workbuddy——如果你的宿主是 Codex，`~/.codex` 下才是你这几天真正干的事；宿主是 Claude Code，就去看 `~/.claude/projects`。
+
+先回答自己两个问题：
+
+1. 我这个 harness 把会话存在哪？（`~/.codex` / `~/.claude` / `~/.cursor` / AppData… ）
+2. 它记录文件改动吗？记录在哪个字段（tool 调用的 `file_path`、diff、还是只有对话）？
+
+确认了再往下走。**如果 `~/.workbuddy` 根本不存在，那不是错误，跳过 workbuddy 那一路就行。**
+
+## 第二步：跑起来
 
 ```bash
-git clone <repo> && cd D_moyudays && python run.py
+python run.py
 ```
 
-`run.py` 依次：自动发现本机项目 → 扫描 workbuddy 记录 → 起本地服务（127.0.0.1:8720）→ 打开浏览器。
+它会自动：解析所有能被识别的 harness → 写入本地库 → 发现项目 → 扫描 → 起服务（127.0.0.1:8720）→ 开浏览器。
 
-不需要 pip install，只用 Python 标准库（3.10+）。
+不需要 pip install，Python 3.10+，零第三方依赖。
 
-## 多 harness：不要只看 workbuddy
+**内置解析器**（`worklog/sources.py`）：
 
-**这是本项目的核心设计：数据源不止一家。** 开发者往往同时装了好几个 harness，各自留了一份日志。只整理 workbuddy 会漏掉一半的工作量。
+| harness | 解析方式 |
+|---|---|
+| workbuddy | 原生（读 `changes-index` + `workbuddy.db`） |
+| claude-code | 精确解析 `tool_use` 的 `Edit`/`Write`，用 old/new 行数差估增删 |
+| codex / cursor / trae / continue | 通用 JSONL 启发式：找时间戳 + 文件路径 |
 
-### 第一步：探测
+启发式不保证准。跑完要检查：**如果某个你自己明明很熟的 harness 导入结果是 0，说明解析没命中，接下来手工接管。**
+
+## 第三步：手工接管（自动解析失败时）
 
 ```bash
 python -m worklog.cli probe
 ```
 
-输出 JSON，列出本机存在哪些 harness 目录、文件数、以及 JSONL 样本的字段轮廓。已知候选目录包括：
-
-`~/.claude` · `~/.codex` · `~/.dsh` · `~/.cursor` · `~/.continue` · `~/.aider` · `~/.gemini` · `~/.cline` · `~/.trae` · `~/.codeium`
-
-**别停在候选列表上。** 如果 `probe` 没命中，自己去家目录、`AppData/Roaming`、`AppData/Local` 里按名字找（claude / codex / cursor / trae / windsurf / cline / qwen / gemini / copilot / aider…），逐个 `ls` 看有没有 `*.jsonl`、`*.json`、`sessions/`、`chats/`、`history*` 这类东西。
-
-### 第二步：读样本，自己判断格式
-
-不要依赖字段名猜。直接读目标文件的前几行：
+输出每个目录的文件数、JSONL 字段轮廓。然后：
 
 ```bash
-head -n 3 <某个会话.jsonl>
+head -n 3 <某个会话.jsonl>     # 直接读，别猜字段名
 ```
 
-你要从中抽出三样东西：
+从样本里认出三样东西：
 
-| 需要什么 | 常见字段名 |
+| 需要什么 | 常见字段 |
 |---|---|
 | 时间戳 | `timestamp` / `ts` / `time` / `created_at` / `createdAt` |
 | 工作目录 | `cwd` / `projectPath` / `workspace` / `workspaceFolder` |
-| 文件变更 | tool 调用的 `file_path` / `path`，或 `files` / `changes` 数组，或 diff 文本 |
+| 文件变更 | tool 调用里的 `file_path` / `path`，或 `files` / `changes` 数组 |
 
-有些 harness 只记录对话不记录文件改动（比如只存 message 的日志）。这种情况下**用会话的起止时间和 token 用量作为活动证据**，把 `file` 留空、`additions`/`deletions` 记 0——图上会显示成空心条，仍然能反映"那时候在干活"。
-
-### 第三步：归一化后导入
-
-把解析结果写成统一格式，交给 `ingest`：
+归一成统一格式后导入：
 
 ```bash
-python -m worklog.cli ingest --file /tmp/claude-code.json
+python -m worklog.cli ingest --file /tmp/xxx.json
 ```
-
-格式：
 
 ```json
 {
-  "source": "claude-code",
+  "source": "codex",
   "sessions": [
     {
-      "session_id": "<该 harness 的会话 id，没有就自己生成一个稳定 id>",
+      "session_id": "<会话 id，没有就自己生成稳定的>",
       "cwd": "D:/work/proj",
-      "title": "用 Claude Code 重构 TTS 分段",
+      "title": "重构登录流程",
       "events": [
-        {"ts": 1763350000000, "file": "D:/work/proj/tts_eval/segmenter.py",
+        {"ts": 1763350000000, "file": "D:/work/proj/src/login.ts",
          "action": "edit", "additions": 87, "deletions": 12}
       ]
     }
@@ -80,58 +86,45 @@ python -m worklog.cli ingest --file /tmp/claude-code.json
 }
 ```
 
-导入后会自动重扫。项目归属、切段、分组、成就、甘特图全部按和 workbuddy 一样的口径处理——不需要额外适配。
+只记录对话、不记录文件改动的 harness，用**会话起止时间当活动证据**：`file` 留空、行数记 0，图上会显示成空心条，仍然能反映"那时候在干活"。
 
-**幂等**：`(source, source_ref)` 去重，同一个会话重复导入不会产生重复数据，可以放心重跑。
+`(source, source_ref)` 幂等，重复导入无副作用。
 
-### 第四步：告诉用户整合了什么
+## 第四步：回报
 
-整理完要回报清楚：哪几个 harness、各导入了多少会话、时间范围。用户最想知道的是"我以前在 Cursor 里干的活也进来了吗"。
+告诉用户：**哪几个 harness、各多少会话、时间范围**。用户最关心的是"我以前在 X 里干的活也进来了吗"。
 
-## 首次运行会发生什么
+导入的数据会出现在顶栏的「来源」筛选器里，可与「项目」任意组合，选「全部来源」就是总览。
 
-1. **发现项目**：只读 workbuddy 会话的 cwd，向上找 `.git` 得到仓库根；没有 git 但反复出现的目录也纳入。结果写到 `config/projects.json`。
-2. **扫描**：解析 `changes-index` 得到逐文件变更，按会话聚合成「工作单元」。
-3. **起服务**：网页 + JSON API，仅监听 127.0.0.1。
-
-`config/projects.json` 只在本机生成，不入库——每台机器的路径不同。
-
-## 常见操作
+## 其它命令
 
 | 想做什么 | 命令 |
 |---|---|
-| 探测其它 harness 目录 | `python -m worklog.cli probe` |
-| 导入外部 harness 记录 | `python -m worklog.cli ingest --file x.json` |
+| 探测 harness 目录 | `python -m worklog.cli probe` |
+| 导入外部记录 | `python -m worklog.cli ingest --file x.json` |
 | 重新发现项目 | `python -m worklog.cli init --force` |
-| 只重扫不启服务 | `python -m worklog.cli scan` |
-| 终端看某项目一段时间 | `python -m worklog.cli report --project LLMbox --days 14` |
-| 起服务不开浏览器 | `python -m worklog.cli serve` |
-| 以 MCP 服务运行 | `python -m worklog.cli mcp` |
+| 只重扫 | `python -m worklog.cli scan` |
+| 终端看报告 | `python -m worklog.cli report --project X --days 14` |
+| 起服务 | `python -m worklog.cli serve` |
+| MCP 服务 | `python -m worklog.cli mcp` |
 
-## 作为 MCP 接入 harness
-
-写进 `~/.workbuddy/mcp.json`（或对应 harness 的 MCP 配置）：
+## 作为 MCP 接入
 
 ```json
 "worklog": {
-  "command": "<python 解释器绝对路径>",
+  "command": "<python 绝对路径>",
   "args": ["-m", "worklog.cli", "mcp"],
   "cwd": "<本仓库绝对路径>"
 }
 ```
 
-工具清单：
+工具：`list_sessions` / `list_blocks` / `apply_split`（切段）、`list_units` / `apply_groups`（归组）、`set_notes` / `set_detail`（写卡片）、`summary` / `scan`。
 
-- `worklog_list_sessions` / `worklog_list_blocks` / `worklog_apply_split`：把会话切成任务段
-- `worklog_list_units` / `worklog_apply_groups`：把任务段聚成组
-- `worklog_set_notes` / `worklog_set_detail`：写卡片摘要与「总分」详情
-- `worklog_summary` / `worklog_scan`：取汇总、重扫
-
-**分组与切分都不做规则判定**，由模型判断后写回，结果落库只算一次。
+切段与归组**不做规则判定**，由模型判断后写回，结果落库只算一次。
 
 ## 关键口径
 
-- 一个会话里跨天且停顿 > 4 小时 → 切成另一段任务（未切分的会话用这条兜底）
+- 一个会话里跨天且停顿 > 4 小时 → 切成另一段任务（未切分的用这条兜底）
 - 一个任务段 = 一个工作单元，标题可以是模型起的那句话
 - 项目按**最长路径前缀**匹配，嵌套子仓库优先于父仓库
 - 变更行数含生成物，会出现「+4 万行」，不代表手写量
@@ -139,4 +132,4 @@ python -m worklog.cli ingest --file /tmp/claude-code.json
 ## 不要把 data/ 提交进仓库
 
 `data/worklog.db` 是运行产物，含本机路径与项目名，已被 `.gitignore` 排除。
-外部 harness 导入的会话同样落在这个库里（`external_session` 表），也不会进仓库。
+外部 harness 导入的会话存在 `external_session` 表，同样不会进仓库。
