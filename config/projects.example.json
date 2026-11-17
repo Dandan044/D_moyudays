@@ -1,0 +1,33 @@
+{
+  "workbuddy_home": "C:\\Users\\<you>\\.workbuddy",
+  "work_roots": [
+    "D:\\work"
+  ],
+  "misc_project": {
+    "id": "misc",
+    "name": "杂项",
+    "color": "#888780",
+    "kind": "misc"
+  },
+  "noise_keywords": [
+    "卸载",
+    "安装",
+    "下载地址",
+    "密码",
+    "教程",
+    "wifi",
+    "驱动",
+    "快捷键",
+    "壁纸"
+  ],
+  "projects": [
+    {
+      "id": "demo-repo",
+      "name": "demo-repo",
+      "path": "D:\\work\\demo-repo",
+      "color": "#5DCAA5",
+      "kind": "personal",
+      "sensitive": 0
+    }
+  ]
+}

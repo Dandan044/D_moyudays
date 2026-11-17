@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>worklog · 工作记录</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">worklog</div>
+  <div class="projwrap">
+    <select id="projSel" class="projsel" aria-label="选择项目"></select>
+  </div>
+  <div class="spacer"></div>
+  <div class="modes" id="modes">
+    <button data-mode="bars" class="on">条带</button>
+    <button data-mode="heat">热力</button>
+  </div>
+  <div class="ranges" id="ranges">
+    <button data-days="7">近 7 天</button>
+    <button data-days="14" class="on">近 14 天</button>
+    <button data-days="28">近 28 天</button>
+    <button data-days="180">全部</button>
+  </div>
+</header>
+
+<section class="headline" id="headline">
+  <div class="stats" id="stats"><div class="stat"><b>…</b><span>加载中</span></div></div>
+  <div class="stamp" id="hlSub"></div>
+</section>
+
+<section class="legend" id="legend"></section>
+
+<section class="ganttwrap" id="ganttwrap">
+  <div class="gantt" id="gantt"></div>
+</section>
+
+<section class="charts">
+  <div class="panel">
+    <h3>工作密度日历</h3>
+    <div class="cap">近 12 周，格子越亮当天改动的文件越多</div>
+    <div id="heatmap"></div>
+  </div>
+  <div class="panel">
+    <h3>工作时段分布</h3>
+    <div class="cap" id="hoursCap">当前跨度内，一天里几点在干活</div>
+    <div id="hours"></div>
+  </div>
+
+  <div class="panel">
+    <h3>每周产出结构</h3>
+    <div class="cap">近 8 周，按产出类型分层，看重心迁移</div>
+    <div id="weekly"></div>
+  </div>
+</section>
+
+<section class="listwrap">
+  <div class="listhead">工作单元卡片<span class="hint">点卡片展开详情；点甘特里的泳道会直接展开对应卡片</span></div>
+  <div id="list" class="cards"></div>
+</section>
+
+<footer class="foot" id="foot"></footer>
+<button class="backbtn" id="backToGantt" hidden><span class="ar">↑</span> 返回甘特图</button>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+# 运行产物（含本机路径与项目名，不入库）
+data/
+config/projects.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.idea/
+.vscode/
