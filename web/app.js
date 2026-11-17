@@ -16,7 +16,7 @@ const COL = {
   base: "#3a3a2e"
 };
 
-const state = { project: "all", days: 14, payload: null, expanded: new Set(), open: new Set(), suppressClick: false, mode: "bars" };
+const state = { project: "all", harness: "", days: 14, payload: null, expanded: new Set(), open: new Set(), suppressClick: false, mode: "bars" };
 
 /* 热力色阶：白 → 玫红 → 正红 → 品红 → 亮紫
    末端往紫走而不是往暗红走，否则在深色底上会糊成一团 */
@@ -138,6 +138,15 @@ function buildRows(p) {
     .forEach((u, i) => rows.push({ type: "unit", u, g: null, key: u.end_day, sub: 0, seq: 9000 + i }));
 
   rows.sort((a, b) => (a.key > b.key ? -1 : a.key < b.key ? 1 : a.seq - b.seq));
+
+  // 长跨度下分组可能上百个，整页拉成几千像素反而没法看；默认只留最近的一段
+  const LIMIT = 60;
+  const showAll = new URLSearchParams(location.search).get("all") === "1";
+  state.truncated = 0;
+  if (!showAll && rows.length > LIMIT) {
+    state.truncated = rows.length - LIMIT;
+    return rows.slice(0, LIMIT);
+  }
   return rows;
 }
 
@@ -811,8 +820,29 @@ function render(p) {
   renderHours(p);
   renderWeekly(p);
   renderCards(p);
+  const cut = state.truncated
+    ? `　·　仅显示最近 ${60} 组，另有 ${state.truncated} 组未显示（URL 加 ?all=1 看全部）`
+    : "";
   $("foot").textContent =
-    `${p.project.name} · 数据源：workbuddy changes-index + sessions（本机只读）· 分组与摘要由 LLM 通过 MCP 写入`;
+    `${p.project.name} · 数据源：workbuddy / claude-code 等 harness 的本地记录（只读）` +
+    ` · 分组与摘要由 LLM 通过 MCP 写入${cut}`;
+}
+
+async function loadHarnesses() {
+  try {
+    const res = await fetch("/api/harnesses");
+    const data = await res.json();
+    const sel = $("harnSel");
+    const total = data.harnesses.reduce((a, h) => a + h.units, 0);
+    sel.innerHTML =
+      `<option value="">全部来源（${total}）</option>` +
+      data.harnesses
+        .map((h) => `<option value="${esc(h.harness)}">${esc(h.harness)}（${h.units}）</option>`)
+        .join("");
+    sel.value = state.harness || "";
+  } catch (e) {
+    /* 忽略 */
+  }
 }
 
 async function loadProjects() {
@@ -838,6 +868,13 @@ async function load() {
     $("hlMain").textContent = "读取失败：" + e.message;
   }
 }
+
+$("harnSel").addEventListener("change", (e) => {
+  state.harness = e.target.value;
+  state.expanded.clear();
+  state.open.clear();
+  load();
+});
 
 $("projSel").addEventListener("change", (e) => {
   state.project = e.target.value;
@@ -910,4 +947,4 @@ if (dq) {
   document.querySelectorAll("#ranges button").forEach((b) => b.classList.toggle("on", Number(b.dataset.days) === dq));
 }
 
-loadProjects().then(load);
+Promise.all([loadHarnesses(), loadProjects()]).then(load);

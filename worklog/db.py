@@ -126,7 +126,7 @@ def connect(path: pathlib.Path | None = None) -> sqlite3.Connection:
 def ensure_columns(con: sqlite3.Connection) -> None:
     """给已存在的表补列（schema 演进用）。"""
     cols = {r[1] for r in con.execute("PRAGMA table_info(work_unit)")}
-    for col, decl in (("summary", "TEXT"), ("detail", "TEXT"), ("group_id", "TEXT"), ("session_id", "TEXT")):
+    for col, decl in (("summary", "TEXT"), ("detail", "TEXT"), ("group_id", "TEXT"), ("session_id", "TEXT"), ("harness", "TEXT")):
         if col not in cols:
             con.execute(f"ALTER TABLE work_unit ADD COLUMN {col} {decl}")
 

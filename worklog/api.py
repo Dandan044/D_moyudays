@@ -17,12 +17,18 @@ ALL_ID = "all"
 MISC_ID = "misc"
 
 
-def _scope(alias: str, project_id: str) -> tuple[str, list]:
-    """返回 (SQL 条件, 参数)。all = 除杂项外的所有项目。"""
-    col = f"{alias}.project_id" if alias else "project_id"
+def _scope(alias: str, project_id: str, harness: str | None = None) -> tuple[str, list]:
+    """返回 (SQL 条件, 参数)。all = 除杂项外的所有项目；harness 为来源过滤。"""
+    pcol = f"{alias}.project_id" if alias else "project_id"
     if project_id == ALL_ID:
-        return f"{col} != '{MISC_ID}'", []
-    return f"{col} = ?", [project_id]
+        conds, args = [f"{pcol} != '{MISC_ID}'"], []
+    else:
+        conds, args = [f"{pcol} = ?"], [project_id]
+    if harness:
+        hcol = f"{alias}.harness" if alias else "harness"
+        conds.append(f"{hcol} = ?")
+        args.append(harness)
+    return " AND ".join(conds), args
 WEEKDAY_CN = ["一", "二", "三", "四", "五", "六", "日"]
 
 
@@ -112,7 +118,7 @@ def _unit_detail(con, uid: str, repo_path: str | None) -> dict:
     return {"dirs": dir_list, "files": file_list}
 
 
-def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date_to: str) -> dict:
+def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date_to: str, harness: str | None = None) -> dict:
     db.ensure_columns(con)
     dfrom, dto = _d(date_from), _d(date_to)
     if project_id == ALL_ID:
@@ -138,7 +144,7 @@ def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date
 
     pmeta = {r["id"]: (r["name"], r["path"]) for r in con.execute("SELECT id, name, path FROM project")}
     pnames = {k: v[0] for k, v in pmeta.items()}
-    scope_sql, scope_args = _scope("", project_id)
+    scope_sql, scope_args = _scope("", project_id, harness)
     rows = con.execute(
         f"""SELECT * FROM work_unit
            WHERE {scope_sql} AND start_day<=? AND end_day>=?
@@ -189,7 +195,7 @@ def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date
     from . import group as group_mod
 
     group_mod.ensure_tables(con)
-    gsql, gargs = _scope("w", project_id)
+    gsql, gargs = _scope("w", project_id, harness)
     gids = {
         r["id"]: r["group_id"]
         for r in con.execute(
@@ -200,10 +206,12 @@ def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date
     }
     for u in units:
         u["group_id"] = gids.get(u["id"])
+    # 组表没有 harness 列：按项目范围取，成员为空的分组后面会被跳过
+    gsc_sql, gsc_args = _scope("", project_id)
     grows = con.execute(
         f"""SELECT * FROM work_group
-           WHERE {scope_sql} AND start_day<=? AND end_day>=? ORDER BY start_day ASC""",
-        (*scope_args, date_to, date_from),
+           WHERE {gsc_sql} AND start_day<=? AND end_day>=? ORDER BY start_day ASC""",
+        (*gsc_args, date_to, date_from),
     ).fetchall()
     groups = []
     for g in grows:
@@ -386,6 +394,14 @@ def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date
     }
 
 
+def list_harnesses(con: sqlite3.Connection) -> list[dict]:
+    rows = con.execute(
+        "SELECT COALESCE(harness,'workbuddy') AS harness, COUNT(*) AS units"
+        " FROM work_unit GROUP BY 1 ORDER BY units DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_projects(con: sqlite3.Connection) -> list[dict]:
     rows = con.execute(
         """SELECT p.id, p.name, p.color, COUNT(w.id) AS units
@@ -428,8 +444,16 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 con.close()
 
+        if path == "/api/harnesses":
+            con = db.connect()
+            try:
+                return self._json({"harnesses": list_harnesses(con)})
+            finally:
+                con.close()
+
         if path == "/api/project":
-            project_id = (qs.get("project") or ["LLMbox"])[0]
+            project_id = (qs.get("project") or [ALL_ID])[0]
+            harness = (qs.get("harness") or [None])[0] or None
             days = int((qs.get("days") or ["14"])[0])
             date_from = (qs.get("from") or [""])[0]
             date_to = (qs.get("to") or [""])[0]
@@ -437,7 +461,7 @@ class Handler(BaseHTTPRequestHandler):
                 date_from, date_to = _default_range(days)
             con = db.connect()
             try:
-                return self._json(build_payload(con, project_id, date_from, date_to))
+                return self._json(build_payload(con, project_id, date_from, date_to, harness))
             finally:
                 con.close()
 

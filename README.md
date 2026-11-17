@@ -36,6 +36,7 @@ git clone https://github.com/Dandan044/D_moyudays.git && cd D_moyudays && python
 
 ## 页面上能看什么
 
+- **两个筛选器**：来源（workbuddy / claude-code / … / 全部来源）× 项目（全部 / 单个），可任意组合
 - **顶部统计**：累计在岗小时、累计改动行、工作单元数、活跃天数，最后更新时间
 - **泳道甘特**：左新右旧，横条是任务段的实际跨度；没记录的周末折叠成窄条，跨周末的条会连起来
 - **条带 / 热力**两种形态：条带按产出类型上色，热力按改动文件数从白到紫
@@ -56,7 +57,7 @@ python -m worklog.cli ingest --file x.json   # 把解析结果导入（自动重
 详细流程写在 [SKILL.md](SKILL.md) 的「多 harness」一节——**那里是给人/AI 看的操作手册，不是装饰**。
 
 导入的会话存在 `external_session` 表，参与后续所有聚合（项目归属、切段、分组、成就），
-和 workbuddy 记录没有区别。`(source, source_ref)` 幂等，重复导入无副作用。
+和 workbuddy 记录没有区别。工作单元会带上 `harness` 字段，顶栏的「来源」筛选器据此分类，选「全部来源」即总览。`(source, source_ref)` 幂等，重复导入无副作用。
 
 ## 接入 harness（MCP）
 

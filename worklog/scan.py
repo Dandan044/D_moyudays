@@ -344,6 +344,7 @@ def scan(verbose: bool = True) -> dict:
                         "is_noise": is_noise,
                         "masked": masked,
                         "cwd": s["cwd"],
+                        "harness": s.get("model") if s.get("external") else "workbuddy",
                     }
                 )
 
@@ -351,12 +352,12 @@ def scan(verbose: bool = True) -> dict:
             con.execute(
                 """INSERT INTO work_unit(id,session_id,title,project_id,kind,start_day,end_day,span_days,
                     active_day_count,max_streak,active_days,file_count,additions,deletions,
-                    is_noise,masked,raw_title) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    is_noise,masked,raw_title,harness) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     u["id"], u["session_id"], u["title"], u["project_id"], u["kind"], u["start_day"],
                     u["end_day"], u["span_days"], len(u["active_days"]), u["max_streak"],
                     json.dumps(u["active_days"]), u["file_count"], u["additions"], u["deletions"],
-                    u["is_noise"], u["masked"], u["raw_title"],
+                    u["is_noise"], u["masked"], u["raw_title"], u["harness"],
                 ),
             )
 
