@@ -58,8 +58,12 @@ class PortableWorkflowTest(unittest.TestCase):
         self.assertNotIn("是否创建", self.cli(*destination))
         self.assertEqual(self.snapshot()[""]["views"]["all"]["7"]["units"], [])
 
-        project = self.home / "projects" / "atlas"
+        project = self.home / "Windows" / "Temp" / "atlas"
         (project / ".git").mkdir(parents=True)
+        if os.name == "posix":
+            alias = self.home / "workspaces"
+            alias.symlink_to(project.parent, target_is_directory=True)
+            project = alias / project.name
         logs = self.home / ".claude" / "projects" / "atlas"
         logs.mkdir(parents=True)
         records = [{"type": "user", "timestamp": self.start.isoformat(), "cwd": str(project),
@@ -82,7 +86,7 @@ class PortableWorkflowTest(unittest.TestCase):
             for title, block in zip(("Validate imports", "Explain the import command"), blocks)]})
         self.assertEqual(len(split["units"]), 2)
         units = self.call("list_units", {"project": "atlas"})["units"]
-        self.assertEqual(len(units), 3)
+        self.assertEqual(len(units), 3, (self.repo / "config" / "projects.json").read_text(encoding="utf-8"))
         ids = [u["id"] for u in units]
         self.assertIn("fixture:discussion", ids)
         self.call("apply_groups", {"project": "atlas", "groups": [{"title": "Import workflow", "unit_ids": ids}]})

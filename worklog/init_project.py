@@ -21,13 +21,15 @@ SKIP_PARTS = {
 
 def _skip(path: pathlib.Path, repo: bool = False) -> bool:
     parts = {p.lower() for p in path.parts}
-    ignored = SKIP_PARTS - {"AppData"} if repo else SKIP_PARTS
-    if any(s.lower() in parts for s in ignored):
+    if repo:
+        # CI 和桌面宿主均可能在系统临时目录中检出实际仓库。
+        return len(path.parts) == 1 or bool(parts & {"node_modules", ".venv", "venv", "site-packages", ".git"})
+    if any(s.lower() in parts for s in SKIP_PARTS):
         return True
     low = str(path).lower()
     if "\\workbuddy\\" in low or "/workbuddy/" in low:
         return True
-    if len(path.parts) <= (1 if repo else 2):
+    if len(path.parts) <= 2:
         return True
     return False
 

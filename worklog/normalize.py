@@ -28,6 +28,9 @@ def norm_path(p: str | None) -> str:
         return ""
     p = p.strip().strip('"').strip("'")
     windows_path = os.name == "nt" or bool(ntpath.splitdrive(p)[0])
+    if os.path.isabs(p):
+        # 项目发现会展开软链接（如 macOS 的 /var → /private/var），日志可保留别名。
+        p = os.path.realpath(p)
     p = p.replace("/", "\\")
     while len(p) > 3 and p.endswith("\\"):
         p = p[:-1]
@@ -39,9 +42,8 @@ class ProjectResolver:
 
     def __init__(self, config: dict):
         self.projects = {p["id"]: p for p in config["projects"]}
-        self.ordered = sorted(
-            config["projects"], key=lambda p: len(norm_path(p["path"])), reverse=True
-        )
+        self.ordered = sorted(((norm_path(p["path"]), p["id"]) for p in config["projects"]),
+                              key=lambda pair: len(pair[0]), reverse=True)
         self.misc = config.get("misc_project", {"id": "misc", "name": "杂项", "color": "#888780"})
         self.work_roots = [norm_path(r) for r in config.get("work_roots", [])]
         self.noise_keywords = [k.lower() for k in config.get("noise_keywords", [])]
@@ -50,10 +52,9 @@ class ProjectResolver:
         np = norm_path(path)
         if not np:
             return None
-        for p in self.ordered:
-            base = norm_path(p["path"])
+        for base, project_id in self.ordered:
             if np == base or np.startswith(base + "\\"):
-                return p["id"]
+                return project_id
         return None
 
     def under_work_root(self, path: str | None) -> bool:
