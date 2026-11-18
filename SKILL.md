@@ -103,6 +103,11 @@ python -m worklog.cli ingest --file /tmp/codex.json      # 幂等，可反复跑
 - **行数常常没有**：`Write` 看 `contents` 行数、`StrReplace` 看 old/new 差值；都没有就记 0，图上会显示成短的条，仍然能反映"那时候在干活"
 - **cwd 不一定有**：没有就留空，项目归属会退回用 `file` 的绝对路径投票
 - **只记录对话的工具**：用会话首末时间当活动证据，`file` 留空、行数 0
+- **patch 型日志**：有的 harness（Codex 之类）不存结构化文件字段，而是把 patch 文本塞在工具入参里。
+  这时要从文本标记里提路径：`*** Update File: xxx`、`*** Add File: xxx`、`--- a/xxx`、`+++ b/xxx`。
+  行数就数 patch 里 `+` 开头 / `-` 开头的行
+- **别用递归找 `path` 键**：嵌套结构里到处都有 `path`，容易抓到 `{'type':'special'}` 这类结构体。
+  只认顶层字段，或者严格校验「像不像路径」
 
 脚本放哪都行（`/tmp` 下就够），**不要提交进仓库**——它只对这台机器、这个版本有效。
 
