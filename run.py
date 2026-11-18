@@ -36,7 +36,13 @@ def main() -> None:
     if payloads:
         for name, payload in payloads.items():
             res = harness.ingest(payload)
-            print(f"  {name:<14} {res['sessions']} 个会话 / {res['events']} 条事件")
+            if res.get("rejected"):
+                print(f"  {name:<14} ✗ 解析质量不合格，已跳过")
+                for prob in res.get("problems", []):
+                    print(f"      · {prob}")
+                print(f"      → 需要你读样本重写解析脚本，再 ingest（SKILL 第三步）")
+            else:
+                print(f"  {name:<14} {res['sessions']} 个会话 / {res['events']} 条事件")
     else:
         print("  没有发现可自动解析的 harness 记录")
 

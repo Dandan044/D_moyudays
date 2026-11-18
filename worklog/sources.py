@@ -251,9 +251,11 @@ def generic_jsonl(home: pathlib.Path, source: str, rel: str) -> dict | None:
             fp = _deep(line, FILE_KEYS)
             if not fp:
                 continue
-            fp = str(fp)
-            if len(fp) < 4 or fp.startswith(("http://", "https://")):
+            from .harness import looks_like_path
+
+            if not looks_like_path(str(fp)):
                 continue
+            fp = str(fp)
             sig = _deep(line, ("additions", "added", "lines_added")) or 0
             dei = _deep(line, ("deletions", "removed", "lines_removed")) or 0
             rec["events"].append(
