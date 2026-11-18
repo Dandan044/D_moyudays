@@ -56,6 +56,8 @@ class PortableWorkflowTest(unittest.TestCase):
         self.assertEqual(json.loads(self.cli("audit", status=1))["total"], 0)
         destination = ("export", "--output", "data/工作记录.html")
         self.assertNotIn("是否创建", self.cli(*destination))
+        verify = ("verify-export", "data/工作记录.html")
+        self.assertIn('"matches": true', self.cli(*verify, status=1))
         self.assertEqual(self.snapshot()[""]["views"]["all"]["7"]["units"], [])
 
         project = self.home / "Windows" / "Temp" / "atlas"
@@ -101,6 +103,14 @@ class PortableWorkflowTest(unittest.TestCase):
         self.cli("ingest", input_data=payload)
         self.assertEqual(json.loads(self.cli("audit"))["complete"], 3)
         self.assertNotIn("是否创建", self.cli(*destination))
+        verified = json.loads(self.cli(*verify))
+        self.assertTrue(verified["matches"])
+        self.assertEqual(verified["coverage"]["complete"], 3)
+        report_path = self.repo / "data" / "工作记录.html"
+        complete_html = report_path.read_text(encoding="utf-8")
+        report_path.write_text(complete_html.replace("function renderGantt(", "function missingGantt("), encoding="utf-8")
+        self.assertIn('"matches": false', self.cli(*verify, status=1))
+        report_path.write_text(complete_html, encoding="utf-8")
         sources = self.snapshot()
         self.assertEqual(set(sources), {"", "fixture-agent", "claude-code"})
         view = sources[""]["views"]["atlas"]["7"]

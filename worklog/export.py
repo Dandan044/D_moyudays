@@ -8,7 +8,7 @@ from tempfile import NamedTemporaryFile
 from . import api, db, review
 
 
-def write_snapshot(path: Path):
+def _snapshot():
     con = db.connect()
     try:
         con.execute("BEGIN")
@@ -35,6 +35,19 @@ def write_snapshot(path: Path):
     html = template.replace('<link rel="stylesheet" href="/app.css">', f"<style>{css}</style>")
     html = html.replace('<script src="/app.js"></script>',
                         f'<script type="application/json" id="worklog-snapshot">{data}</script>\n<script>{js}</script>')
+    view_count = sum(len(ranges) for source in sources.values() for ranges in source["views"].values())
+    return html, coverage, view_count
+
+
+def verify_snapshot(path: Path):
+    """核对实际交付文件与当前工作库及随库前端，无需浏览器。"""
+    actual = path.read_text(encoding="utf-8-sig")
+    expected, coverage, view_count = _snapshot()
+    return {"matches": actual == expected, "views": view_count, "coverage": coverage}
+
+
+def write_snapshot(path: Path):
+    html, coverage, _ = _snapshot()
     path.parent.mkdir(parents=True, exist_ok=True)
     with NamedTemporaryFile(dir=path.parent, delete=False) as tmp:
         tmp_path = Path(tmp.name)

@@ -80,6 +80,20 @@ def cmd_export(args) -> None:
         con.close()
 
 
+def cmd_verify_export(args) -> None:
+    from .export import verify_snapshot
+
+    path = Path(args.path)
+    if not path.is_file():
+        raise SystemExit(f"未找到交付文件：{path}")
+    result = verify_snapshot(path)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if not result["matches"]:
+        raise SystemExit("交付文件与当前工作库或网页模板不一致，请重新导出到同一路径再核对。")
+    if not result["coverage"]["total"] or result["coverage"]["pending"]:
+        raise SystemExit("文件一致；当前工作库为空或仍有待整理任务。")
+
+
 def cmd_audit(args) -> None:
     from .review import audit
 
@@ -161,6 +175,10 @@ def main(argv: list[str] | None = None) -> None:
     p_export = sub.add_parser("export", help="导出可筛选的离线 HTML")
     p_export.add_argument("--output", default=str(db.DATA_DIR / f"工作记录-{dt.date.today()}.html"))
     p_export.set_defaults(func=cmd_export)
+
+    p_verify = sub.add_parser("verify-export", help="核对实际离线文件的全部数据视图、前端模板和整理覆盖率")
+    p_verify.add_argument("path", help="刚导出的 HTML 路径")
+    p_verify.set_defaults(func=cmd_verify_export)
 
     p_rep = sub.add_parser("report", help="终端输出某项目一段时间的工作记录")
     p_rep.add_argument("--project", default="all")

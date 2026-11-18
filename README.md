@@ -28,6 +28,8 @@ python -X utf8 run.py --prepare-only
 
 迁移测试在独立的用户目录和仓库副本中生成样例，覆盖空库、两个来源、分组详情及重复更新。设置 `WORKLOG_TEST_CHROME` 为本机 Chrome 或 Chromium 的可执行文件路径，可连同离线网页的实际渲染一起验证。
 
+核对实际交付文件可运行 `python -X utf8 -m worklog.cli verify-export "data/工作记录.html"`。它会与当前工作库及仓库模板比对所有离线视图、内嵌脚本和样式，并报告覆盖率。浏览器交互实测单独报告；仅有终端的机器也能完成文件验收和交付。
+
 ## 它怎么工作
 
 ```
