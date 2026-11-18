@@ -6,6 +6,7 @@ import argparse
 import datetime as dt
 import json
 import sys
+from pathlib import Path
 
 from . import api, db, scan as scan_mod
 
@@ -38,16 +39,58 @@ def cmd_ingest(args) -> None:
     from . import harness
 
     if args.file:
-        payload = json.loads(open(args.file, encoding="utf-8").read())
+        payload = json.loads(Path(args.file).read_text(encoding="utf-8-sig"))
     else:
         payload = json.load(sys.stdin)
     res = harness.ingest(payload)
+    if res.get("rejected"):
+        raise SystemExit(res["reason"])
     print(f"导入 {res['source']}：{res['sessions']} 个会话 / {res['events']} 条事件")
+    from . import init_project
+    wb_home = db.load_config().get("workbuddy_home") if db.CONFIG_PATH.exists() else None
+    init_project.write_config(Path(wb_home or Path.home() / ".workbuddy"), refresh=True)
     scan_mod.scan(verbose=True)
+
+
+def cmd_call(args) -> None:
+    from .mcp_stdio import call_tool
+
+    params = json.loads(Path(args.file).read_text(encoding="utf-8-sig")) if args.file else json.load(sys.stdin)
+    result = call_tool(args.tool, params)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def cmd_scan(args) -> None:
     scan_mod.scan(verbose=True)
+
+
+def cmd_export(args) -> None:
+    from pathlib import Path
+    from .export import write_snapshot
+    from .delivery import first_delivery_questions
+
+    path = Path(args.output)
+    coverage = write_snapshot(path)
+    print(path.resolve())
+    con = db.connect()
+    try:
+        for question in first_delivery_questions(con, coverage):
+            print(question)
+    finally:
+        con.close()
+
+
+def cmd_audit(args) -> None:
+    from .review import audit
+
+    con = db.connect()
+    try:
+        report = audit(con)
+    finally:
+        con.close()
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    if report["pending"] or not report["total"]:
+        raise SystemExit(1)
 
 
 def cmd_report(args) -> None:
@@ -104,11 +147,23 @@ def main(argv: list[str] | None = None) -> None:
     p_ing.add_argument("--file", default=None, help="JSON 文件；省略则从 stdin 读")
     p_ing.set_defaults(func=cmd_ingest)
 
+    p_call = sub.add_parser("call", help="直接调用与 MCP 相同的整理工具，参数从 JSON 文件或 stdin 读取")
+    from .mcp_stdio import TOOLS
+    p_call.add_argument("tool", choices=[tool["name"] for tool in TOOLS])
+    p_call.add_argument("--file", help="工具参数 JSON 文件")
+    p_call.set_defaults(func=cmd_call)
+
     p_scan = sub.add_parser("scan", help="扫描 workbuddy 本地记录并重建派生层")
     p_scan.set_defaults(func=cmd_scan)
 
+    sub.add_parser("audit", help="检查全库标题、主题归属与卡片详情").set_defaults(func=cmd_audit)
+
+    p_export = sub.add_parser("export", help="导出可筛选的离线 HTML")
+    p_export.add_argument("--output", default=str(db.DATA_DIR / f"工作记录-{dt.date.today()}.html"))
+    p_export.set_defaults(func=cmd_export)
+
     p_rep = sub.add_parser("report", help="终端输出某项目一段时间的工作记录")
-    p_rep.add_argument("--project", default="LLMbox")
+    p_rep.add_argument("--project", default="all")
     p_rep.add_argument("--days", type=int, default=14)
     p_rep.add_argument("--from", dest="from_", default=None)
     p_rep.add_argument("--to", dest="to", default=None)

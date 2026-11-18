@@ -176,6 +176,9 @@ def apply_groups(con, project_id: str, groups: list[dict]) -> dict:
             skipped.append({"title": g.get("title"), "reason": "no valid unit_ids", "missing": missing[:5]})
             continue
         gid = g.get("id") or _gid(project_id, ids)
+        owner = con.execute("SELECT project_id FROM work_group WHERE id=?", (gid,)).fetchone()
+        if owner and owner["project_id"] != project_id:
+            raise ValueError("主题属于另一项目")
         title = (g.get("title") or "").strip() or "未命名分组"
         # 同一批 unit 若已在别的组里，先摘出来
         qs = ",".join("?" * len(ids))
@@ -251,6 +254,9 @@ def reattach(con) -> int:
     """扫描重建 work_unit 之后把已有分组挂回去，并清掉空组。"""
     ensure_tables(con)
     con.execute("DELETE FROM unit_group_map WHERE unit_id NOT IN (SELECT id FROM work_unit)")
+    con.execute("""DELETE FROM unit_group_map WHERE NOT EXISTS (
+        SELECT 1 FROM work_unit w JOIN work_group g ON g.project_id = w.project_id
+        WHERE w.id=unit_group_map.unit_id AND g.id=unit_group_map.group_id)""")
     _sync_group_col(con)
     stale = [
         r["id"]

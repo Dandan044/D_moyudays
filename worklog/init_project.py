@@ -19,14 +19,15 @@ SKIP_PARTS = {
 }
 
 
-def _skip(path: pathlib.Path) -> bool:
+def _skip(path: pathlib.Path, repo: bool = False) -> bool:
     parts = {p.lower() for p in path.parts}
-    if any(s.lower() in parts for s in SKIP_PARTS):
+    ignored = SKIP_PARTS - {"AppData"} if repo else SKIP_PARTS
+    if any(s.lower() in parts for s in ignored):
         return True
     low = str(path).lower()
     if "\\workbuddy\\" in low or "/workbuddy/" in low:
         return True
-    if len(path.parts) <= 2:      # 盘符根 / 一级目录
+    if len(path.parts) <= (1 if repo else 2):
         return True
     return False
 
@@ -70,7 +71,7 @@ def discover(wb_home: pathlib.Path) -> tuple[list[dict], dict]:
         con = db.connect()
         cwds += [
             r["cwd"]
-            for r in con.execute("SELECT DISTINCT cwd FROM external_session WHERE cwd IS NOT NULL")
+            for r in con.execute("SELECT cwd FROM external_session WHERE cwd IS NOT NULL")
         ]
         con.close()
     except Exception:  # noqa: BLE001
@@ -80,16 +81,14 @@ def discover(wb_home: pathlib.Path) -> tuple[list[dict], dict]:
         if not cwd:
             continue
         path = pathlib.Path(cwd)
-        if _skip(path):
-            continue
         root = find_repo_root(cwd)
-        if root and not _skip(root):
+        if root and not _skip(root, repo=True):
             repo_hits[str(root)] += 1
-        elif len(path.parts) >= 3:
+        elif not _skip(path):
             loose_hits[str(path)] += 1
 
     entries = []
-    used: set[str] = set()
+    used = {"misc", "all"}
     for root, n in repo_hits.most_common():
         p = pathlib.Path(root)
         entries.append({"path": str(p), "name": p.name, "sessions": n, "kind": "repo"})
@@ -103,7 +102,7 @@ def discover(wb_home: pathlib.Path) -> tuple[list[dict], dict]:
     seen: set[str] = set()
     uniq = []
     for e in entries:
-        key = e["path"].lower()
+        key = os.path.normcase(os.path.normpath(e["path"]))
         if key not in seen:
             seen.add(key)
             uniq.append(e)
@@ -132,17 +131,25 @@ def discover(wb_home: pathlib.Path) -> tuple[list[dict], dict]:
     return projects, stats
 
 
-def write_config(wb_home: pathlib.Path, force: bool = False) -> dict:
+def write_config(wb_home: pathlib.Path, force: bool = False, refresh: bool = False) -> dict:
     cfg_path = db.CONFIG_PATH
-    if cfg_path.exists() and not force:
-        try:
-            cur = json.loads(cfg_path.read_text(encoding="utf-8"))
-            if cur.get("projects"):
-                return {"skipped": True, "projects": len(cur["projects"]), "path": str(cfg_path)}
-        except (json.JSONDecodeError, OSError):
-            pass
+    cur = db.load_config() if cfg_path.exists() and not force else None
+    if cur is not None and not refresh:
+        return {"skipped": True, "projects": len(cur["projects"]), "path": str(cfg_path)}
 
     projects, stats = discover(wb_home)
+    if cur is not None:
+        existing = cur["projects"]
+        paths = {os.path.normcase(os.path.normpath(p["path"])) for p in existing}
+        additions = [p for p in projects if os.path.normcase(os.path.normpath(p["path"])) not in paths]
+        if not additions:
+            return {"skipped": True, "projects": len(existing), "path": str(cfg_path)}
+        used = {p["id"].lower() for p in existing} | {"all", "misc"}
+        for p in additions:
+            p["id"] = _uniq_id(p["name"], used)
+        existing.extend(additions)
+        cfg_path.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"skipped": False, "projects": len(existing), "path": str(cfg_path), **stats}
     cfg = {
         "workbuddy_home": str(wb_home),
         "work_roots": sorted({str(pathlib.Path(p["path"]).parent) for p in projects})[:6],

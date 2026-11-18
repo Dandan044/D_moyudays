@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import pathlib
+from .review import readable, task_title
 
 def looks_like_path(p) -> bool:
     """判断一个值像不像文件路径。宁可错杀，也不要把结构体当文件名。"""
@@ -38,21 +39,29 @@ def quality_report(payload: dict) -> dict:
     if not n_s or not n_e:
         return {"ok": False, "reason": "没有可导入的会话或事件", "sessions": n_s, "events": n_e}
 
-    default_titles = sum(1 for s in sessions if str(s.get("title") or "").endswith("会话"))
-    zero_lines = sum(1 for e in events if not e.get("additions") and not e.get("deletions"))
-    bad_paths = sum(1 for e in events if not looks_like_path(e.get("file")))
+    default_titles = sum(1 for s in sessions if not task_title(s.get("title")))
+    files = [e for e in events if not (e.get("action") == "activity" and not e.get("file"))]
+    measured = [e for e in files if e.get("line_counts_known", True)]
+    zero_lines = sum(1 for e in measured if not e.get("additions") and not e.get("deletions"))
+    bad_paths = sum(1 for e in files if not looks_like_path(e.get("file")))
     no_cwd = sum(1 for s in sessions if not s.get("cwd"))
 
     r = {
         "sessions": n_s,
         "events": n_e,
         "default_title_ratio": round(default_titles / n_s, 2),
-        "zero_lines_ratio": round(zero_lines / n_e, 2),
-        "bad_path_ratio": round(bad_paths / n_e, 2),
+        "zero_lines_ratio": round(zero_lines / max(1, len(measured)), 2),
+        "bad_path_ratio": round(bad_paths / max(1, len(files)), 2),
         "no_cwd_ratio": round(no_cwd / n_s, 2),
     }
 
     problems = []
+    if any(not s.get("session_id") or not s.get("events") for s in sessions):
+        problems.append("每个会话都需要稳定 ID 和至少一条活动记录")
+    if any(not isinstance(e.get("ts"), int) or e["ts"] <= 0 for e in events):
+        problems.append("每条事件都需要有效的毫秒时间戳")
+    if any(s.get("title") and not readable(s["title"]) for s in sessions):
+        problems.append("会话标题含宿主提示或角色设定，请回看用户请求和实际工作后命名")
     if r["default_title_ratio"] >= 0.8:
         problems.append(f"{int(r['default_title_ratio']*100)}% 的会话标题是默认值（说明没提取到真实标题）")
     if r["bad_path_ratio"] >= 0.3:
@@ -93,6 +102,9 @@ def ingest(payload: dict, force: bool = False) -> dict:
             if not sid or not events:
                 n_skipped += 1
                 continue
+            owner = con.execute("SELECT source FROM external_session WHERE session_id=?", (sid,)).fetchone()
+            if owner and owner["source"] != source:
+                raise ValueError(f"会话 ID {sid!r} 已归属另一来源，请为新来源的 ID 加前缀后重试")
             stamps = [int(e["ts"]) for e in events if e.get("ts")]
             con.execute(
                 "INSERT INTO external_session(session_id,source,cwd,title,start_ts,end_ts,imported_at)"

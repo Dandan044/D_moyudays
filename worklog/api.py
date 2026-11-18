@@ -10,7 +10,7 @@ import sqlite3
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import db
+from . import db, review
 
 WEB_DIR = db.ROOT / "web"
 ALL_ID = "all"
@@ -18,10 +18,10 @@ MISC_ID = "misc"
 
 
 def _scope(alias: str, project_id: str, harness: str | None = None) -> tuple[str, list]:
-    """返回 (SQL 条件, 参数)。all = 除杂项外的所有项目；harness 为来源过滤。"""
+    """按项目和来源选择记录，全部项目包含杂项。"""
     pcol = f"{alias}.project_id" if alias else "project_id"
     if project_id == ALL_ID:
-        conds, args = [f"{pcol} != '{MISC_ID}'"], []
+        conds, args = ["1=1"], []
     else:
         conds, args = [f"{pcol} = ?"], [project_id]
     if harness:
@@ -40,6 +40,16 @@ def _default_range(days: int = 14) -> tuple[str, str]:
     end = dt.date.today()
     start = end - dt.timedelta(days=days - 1)
     return start.isoformat(), end.isoformat()
+
+
+def report_range(con, project_id, harness, days):
+    if days != 0:
+        return _default_range(days)
+    scope, args = _scope("", project_id, harness)
+    start, end = con.execute(
+        f"SELECT MIN(start_day), MAX(end_day) FROM work_unit WHERE {scope}", args
+    ).fetchone()
+    return (start, end) if start and end else _default_range(1)
 
 
 def _segs(active: list[str], dfrom: dt.date, dto: dt.date) -> list[list[str]]:
@@ -64,27 +74,44 @@ def fmt_h(v: float) -> str:
     return f"{h:02d}:{m:02d}"
 
 
-def _detail_json(row) -> dict | None:
-    if "detail" not in row.keys() or not row["detail"]:
-        return None
-    try:
-        data = json.loads(row["detail"])
-    except (json.JSONDecodeError, TypeError):
-        return None
-    return data if isinstance(data, dict) else None
+def _extend_bounds(bounds, day, first, last):
+    interval = bounds.setdefault(day, [first, last])
+    interval[0] = min(interval[0], first)
+    interval[1] = max(interval[1], last)
 
 
-def _unit_detail(con, uid: str, repo_path: str | None) -> dict:
+def _record_time(ts, bounds, date_from, date_to):
+    if not ts or ts <= 0:
+        return None
+    local = dt.datetime.fromtimestamp(ts / 1000)
+    day = local.date().isoformat()
+    if date_from <= day <= date_to:
+        hour = local.hour + local.minute / 60 + (local.second + local.microsecond / 1e6) / 3600
+        _extend_bounds(bounds, day, hour, hour)
+        return f"{day}T{local.hour:02d}"
+
+
+def _unit_detail(con, uid: str, repo_path: str | None, date_from: str, date_to: str) -> dict:
     """把一个单元的变更摊成「目录 / 代表文件」，供卡片展示。"""
     arts = con.execute(
-        "SELECT path, action, additions, deletions FROM artifact WHERE work_unit_id=?", (uid,)
+        "SELECT path, action, additions, deletions, ts, day FROM artifact WHERE work_unit_id=?", (uid,)
     ).fetchall()
     base = (repo_path or "").replace("\\", "/").rstrip("/").lower()
     dirs: dict[str, dict] = {}
     files: dict[str, dict] = {}
+    hour_paths = {}
+    bounds = {}
+    date_only = set()
 
     for a in arts:
-        p = a["path"].replace("\\", "/")
+        p = (a["path"] or "").replace("\\", "/")
+        hour = _record_time(a["ts"], bounds, date_from, date_to)
+        if hour:
+            paths = hour_paths.setdefault(hour, set())
+            if p:
+                paths.add(p)
+        elif not a["ts"] and a["day"] and date_from <= a["day"] <= date_to:
+            date_only.add(a["day"])
         low = p.lower()
         rel = p[len(base) + 1 :] if base and low.startswith(base + "/") else p
         parts = [x for x in rel.split("/") if x]
@@ -115,7 +142,8 @@ def _unit_detail(con, uid: str, repo_path: str | None) -> dict:
         for d in sorted(dirs.values(), key=lambda x: -(x["add"] + x["del"]))[:6]
     ]
     file_list = sorted(files.values(), key=lambda x: -(x["add"] + x["del"]))[:10]
-    return {"dirs": dir_list, "files": file_list}
+    return {"dirs": dir_list, "files": file_list, "hour_files": {h: len(paths) for h, paths in hour_paths.items()},
+            "date_only": date_only, "day_bounds": bounds}
 
 
 def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date_to: str, harness: str | None = None) -> dict:
@@ -146,7 +174,11 @@ def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date
     pnames = {k: v[0] for k, v in pmeta.items()}
     scope_sql, scope_args = _scope("", project_id, harness)
     rows = con.execute(
-        f"""SELECT * FROM work_unit
+        f"""SELECT w.*, (SELECT e.start_ts FROM external_session e WHERE e.session_id=w.id) AS session_start,
+               COALESCE(w.updated_ms,
+               (SELECT MAX(a.ts) FROM artifact a WHERE a.work_unit_id=w.id),
+               (SELECT e.end_ts FROM external_session e WHERE e.session_id=w.id)) AS last_activity
+           FROM work_unit w
            WHERE {scope_sql} AND start_day<=? AND end_day>=?
            ORDER BY start_day ASC, end_day ASC""",
         (*scope_args, date_to, date_from),
@@ -158,15 +190,32 @@ def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date
         segs = _segs(active, dfrom, dto)
         if not segs:
             continue
-        det = _unit_detail(con, r["id"], pmeta.get(r["project_id"], (None, None))[1])
+        det = _unit_detail(con, r["id"], pmeta.get(r["project_id"], (None, None))[1], date_from, date_to)
+        hour_files = det["hour_files"]
+        for ts in (r["session_start"], r["last_activity"]):
+            hour = _record_time(ts, det["day_bounds"], date_from, date_to)
+            if hour:
+                hour_files.setdefault(hour, 0)
+        timed_days = {h[:10] for h in hour_files}
+        date_only = det["date_only"] | {d for d in active if date_from <= d <= date_to and d not in timed_days}
+        title = r["title"]
+        valid_title = review.task_title(title)
+        detail = review.parse_detail(r["detail"])
+        issues = review.detail_issues(title, detail)
+        if not valid_title:
+            issues.append("任务名称待核实")
         units.append(
             {
                 "id": r["id"],
-                "title": r["title"],
+                "title": title if valid_title else "待核实任务",
                 "kind": r["kind"],
                 "start_day": r["start_day"],
                 "end_day": r["end_day"],
+                "updated_ms": r["last_activity"] or int(dt.datetime.fromisoformat(r["end_day"]).timestamp() * 1000),
                 "active": active,
+                "hour_files": hour_files,
+                "day_bounds": det["day_bounds"],
+                "date_only": sorted(date_only),
                 "segs": segs,
                 "span_days": r["span_days"],
                 "max_streak": r["max_streak"],
@@ -176,14 +225,18 @@ def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date
                 "design": r["file_count"] == 0,
                 "masked": r["masked"],
                 "group_id": r["group_id"] if "group_id" in r.keys() else None,
-                "summary": r["summary"] if "summary" in r.keys() else None,
-                "detail": _detail_json(r),
+                "summary": r["summary"] if review.readable(r["summary"]) else None,
+                "detail": review.display_detail(detail),
+                "review_issues": issues,
                 "dirs": det["dirs"],
                 "files": det["files"],
                 "project": pnames.get(r["project_id"], r["project_id"]),
+                "project_id": r["project_id"],
+                "harness": r["harness"],
             }
         )
 
+    units.sort(key=lambda unit: (-unit["updated_ms"], unit["id"]))
     day_counter: dict[str, int] = {}
     for u in units:
         for a in u["active"]:
@@ -205,7 +258,7 @@ def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date
         )
     }
     for u in units:
-        u["group_id"] = gids.get(u["id"])
+        u["group_id"] = None
     # 组表没有 harness 列：按项目范围取，成员为空的分组后面会被跳过
     gsc_sql, gsc_args = _scope("", project_id)
     grows = con.execute(
@@ -215,14 +268,21 @@ def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date
     ).fetchall()
     groups = []
     for g in grows:
-        members = sorted(
-            [u for u in units if gids.get(u["id"]) == g["id"]], key=lambda u: u["start_day"]
-        )
-        if not members:
+        members = [u for u in units if gids.get(u["id"]) == g["id"] and u["project_id"] == g["project_id"]]
+        if not members or not review.task_title(g["title"]):
             continue
+        for member in members:
+            member["group_id"] = g["id"]
         kinds = json.loads(g["kinds"] or "{}")
         win_start = min(m["start_day"] for m in members)
         win_end = max(m["end_day"] for m in members)
+        hour_totals = {}
+        bounds = {}
+        for member in members:
+            for day, (first, last) in member["day_bounds"].items():
+                _extend_bounds(bounds, day, first, last)
+            for hour, count in member["hour_files"].items():
+                hour_totals[hour] = hour_totals.get(hour, 0) + count
         groups.append(
             {
                 "id": g["id"],
@@ -232,15 +292,22 @@ def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date
                 "unit_count_total": g["unit_count"],
                 "start_day": win_start,
                 "end_day": win_end,
-                "segs": _segs(json.loads(g["active_days"] or "[]"), dfrom, dto),
+                "hour_files": {h: total / len(members) for h, total in hour_totals.items()},
+                "day_bounds": bounds,
+                "date_only": sorted({d for m in members for d in m["date_only"]}),
+                "updated_ms": members[0]["updated_ms"],
+                "segs": _segs([day for m in members for day in m["active"]], dfrom, dto),
                 "file_count": sum(m["file_count"] for m in members),
                 "additions": sum(m["additions"] for m in members),
                 "deletions": sum(m["deletions"] for m in members),
                 "design": all(u["design"] for u in members),
                 "project": pnames.get(g["project_id"], g["project_id"]),
+                "project_id": g["project_id"],
                 "units": members,
             }
         )
+
+    groups.sort(key=lambda topic: (-topic["updated_ms"], topic["id"]))
 
     # ---- 日历热力图：近 12 周每日变更条数 ----
     heatmap = []
@@ -250,7 +317,7 @@ def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date
         for r in con.execute(
             f"""SELECT a.day AS day, COUNT(*) AS c
                FROM artifact a JOIN work_unit w ON w.id = a.work_unit_id
-               WHERE {gsql} AND a.day >= ? GROUP BY a.day""",
+               WHERE {gsql} AND a.path != '' AND a.day >= ? GROUP BY a.day""",
             (*gargs, hstart.isoformat()),
         )
     }
@@ -266,7 +333,7 @@ def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date
         f"""SELECT a.day AS day, COUNT(*) AS n, MIN(a.ts) AS mn, MAX(a.ts) AS mx,
                    COUNT(DISTINCT w.project_id) AS np
             FROM artifact a JOIN work_unit w ON w.id = a.work_unit_id
-            WHERE {gsql} AND a.day >= ? AND a.day <= ? GROUP BY a.day""",
+            WHERE {gsql} AND a.path != '' AND a.ts > 0 AND a.day >= ? AND a.day <= ? GROUP BY a.day""",
         (*gargs, date_from, date_to),
     ):
         mn = dt.datetime.fromtimestamp(r["mn"] / 1000)
@@ -280,7 +347,7 @@ def build_payload(con: sqlite3.Connection, project_id: str, date_from: str, date
         }
     for r in con.execute(
         f"""SELECT a.ts AS ts FROM artifact a JOIN work_unit w ON w.id = a.work_unit_id
-            WHERE {gsql} AND a.day >= ? AND a.day <= ?""",
+            WHERE {gsql} AND a.path != '' AND a.ts > 0 AND a.day >= ? AND a.day <= ?""",
         (*gargs, date_from, date_to),
     ):
         hours[dt.datetime.fromtimestamp(r["ts"] / 1000).hour] += 1
@@ -407,8 +474,8 @@ def list_harnesses(con: sqlite3.Connection) -> list[dict]:
 
 def list_projects(con: sqlite3.Connection, harness: str | None = None) -> list[dict]:
     """项目清单。给了 harness 就只列出来源下有数据的项目，避免选完空转。"""
-    where = "WHERE p.id != ?"
-    params: list = [MISC_ID]
+    where = "WHERE 1=1"
+    params: list = []
     if harness:
         where += " AND w.harness = ?"
         params.append(harness)
@@ -467,10 +534,10 @@ class Handler(BaseHTTPRequestHandler):
             days = int((qs.get("days") or ["14"])[0])
             date_from = (qs.get("from") or [""])[0]
             date_to = (qs.get("to") or [""])[0]
-            if not date_from or not date_to:
-                date_from, date_to = _default_range(days)
             con = db.connect()
             try:
+                if not date_from or not date_to:
+                    date_from, date_to = report_range(con, project_id, harness, days)
                 return self._json(build_payload(con, project_id, date_from, date_to, harness))
             finally:
                 con.close()
@@ -485,10 +552,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, target.read_bytes(), ctype)
 
 
-def serve(host: str = "127.0.0.1", port: int = 8720) -> None:
+def serve(host: str = "127.0.0.1", port: int = 8720, *, on_ready=None) -> None:
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"worklog 已启动 → http://{host}:{port}/")
     try:
+        if on_ready:
+            on_ready()
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n已停止")

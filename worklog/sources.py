@@ -19,6 +19,7 @@ import collections
 import datetime as dt
 import json
 import pathlib
+from .review import readable
 
 TIME_KEYS = ("timestamp", "ts", "time", "created_at", "createdAt", "date")
 FILE_KEYS = ("file_path", "filePath", "path", "filename", "target_file")
@@ -82,6 +83,7 @@ def claude_code(home: pathlib.Path) -> dict | None:
         sid = f.stem
         rec = sessions.setdefault(sid, {"session_id": sid, "cwd": None, "title": None, "events": []})
         votes: collections.Counter = collections.Counter()
+        message_times = []
 
         for line in _iter_jsonl(f):
             cwd = _first(line, CWD_KEYS)
@@ -90,14 +92,16 @@ def claude_code(home: pathlib.Path) -> dict | None:
             ms = _to_ms(_first(line, TIME_KEYS))
             if not ms:
                 continue
+            if line.get("type") in ("user", "assistant"):
+                message_times.append(ms)
 
             if line.get("type") == "user" and not rec["title"]:
                 c = (line.get("message") or {}).get("content")
-                if isinstance(c, str):
+                if isinstance(c, str) and readable(c):
                     rec["title"] = c[:60]
                 elif isinstance(c, list):
                     for b in c:
-                        if isinstance(b, dict) and b.get("type") == "text":
+                        if isinstance(b, dict) and b.get("type") == "text" and readable(b.get("text")):
                             rec["title"] = str(b.get("text", ""))[:60]
                             break
 
@@ -115,11 +119,13 @@ def claude_code(home: pathlib.Path) -> dict | None:
                     adds, dels = _lines(inp.get("content")), 0
                 else:
                     old, new = _lines(inp.get("old_string")), _lines(inp.get("new_string"))
-                    adds, dels = (new - old, 0) if new >= old else (0, old - new)
+                    adds, dels = new, old
                 rec["events"].append(
                     {"ts": ms, "file": fp, "action": str(name).lower(), "additions": adds, "deletions": dels}
                 )
 
+        if not rec["events"] and message_times:
+            rec["events"] = [{"ts": ms, "action": "activity"} for ms in sorted(set(message_times))]
         if votes:
             rec["cwd"] = votes.most_common(1)[0][0]
         if not rec["title"]:
@@ -152,8 +158,7 @@ def cursor(home: pathlib.Path) -> dict | None:
 
     sessions = []
     for f in root.rglob("*.jsonl"):
-        parts = str(f).split("projects")[-1].strip("\\/").split("\\")
-        slug = parts[0] if parts else ""
+        slug = f.relative_to(root).parts[0]
         rec = {"session_id": f.stem, "cwd": _slug_to_path(slug, home), "title": None, "events": []}
         first_ms = None
 
@@ -220,13 +225,17 @@ def _parse_cursor_ts(day: str, hm: str) -> int | None:
 
 
 def _slug_to_path(slug: str, home: pathlib.Path) -> str:
-    """d-Dandan-LLMbox → D:////Dandan////LLMbox；匹配不到已知项目就原样返回。"""
+    """优先还原本机存在的工作目录。"""
     if not slug:
         return ""
     raw = slug.replace("-", "\\")
     if len(raw) > 2 and raw[1] == ":":
         return raw[:1].upper() + raw[1:]
-    return slug
+    if len(slug) > 2 and slug[1] == "-" and slug[0].isalpha():
+        candidate = pathlib.Path(slug[0] + ":" + raw[1:])
+        if candidate.is_dir():
+            return str(candidate)
+    return ""
 
 
 # ---------------- Codex / 通用 JSONL ----------------
@@ -299,6 +308,8 @@ def autoload(home: pathlib.Path) -> dict[str, dict]:
     """跑一遍已知格式。跑不出来的交给模型——本函数不追求覆盖率。"""
     out: dict[str, dict] = {}
     for name, fn in AUTO_SOURCES:
+        if name in out:
+            continue
         try:
             payload = fn(home)
         except Exception:  # noqa: BLE001 —— 单个源坏掉不能拖垮整体

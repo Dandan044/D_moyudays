@@ -10,31 +10,65 @@ const KIND = {
 const COL = {
   weekend: "rgba(230,226,213,0.032)",
   quiet: "rgba(230,226,213,0.06)",
-  grid: "#23231b",
-  week: "#7a3a24",
-  head: "#6f6b58",
-  base: "#3a3a2e"
+  grid: "var(--line)",
+  week: "var(--line2)",
+  head: "var(--ink3)",
+  base: "var(--line2)"
 };
 
-const state = { project: "all", harness: "", days: 14, payload: null, expanded: new Set(), open: new Set(), suppressClick: false, mode: "bars" };
+const query = new URLSearchParams(location.search);
+const state = {
+  project: "all", harness: "", days: 7, payload: null, expanded: new Set(), open: new Set(),
+  suppressClick: false, mode: query.get("mode") === "bars" ? "bars" : "heat",
+  order: query.get("order") === "recent" ? "recent" : "project"
+};
 
-/* 热力色阶：白 → 玫红 → 正红 → 品红 → 亮紫
-   末端往紫走而不是往暗红走，否则在深色底上会糊成一团 */
-const HEAT_BUCKETS = [
-  { max: 1, color: "#F6EDEF" },
-  { max: 3, color: "#F2A7B8" },
-  { max: 8, color: "#E2504E" },
-  { max: 20, color: "#C63FA8" },
-  { max: Infinity, color: "#A07BF5" }
-];
+const HEAT_COLORS = [[255, 255, 255], [240, 65, 74], [144, 58, 213]];
+// 主题均值可能小于一份文件，色阶从 0.25 份的量级开始展开。
+const HEAT_REFERENCE = 0.25;
 
-function heatColor(files) {
-  if (!files) return "#FBEAEA";
-  for (const b of HEAT_BUCKETS) if (files <= b.max) return b.color;
-  return HEAT_BUCKETS[HEAT_BUCKETS.length - 1].color;
+function heatMaximum(units) {
+  return units.reduce((max, u) => Object.values(u.hour_files).reduce((v, n) => Math.max(v, n), max), 1);
+}
+
+function heatPosition(value, max) {
+  return Math.log1p(Math.min(max, Math.max(0, value)) / HEAT_REFERENCE) / Math.log1p(max / HEAT_REFERENCE);
+}
+
+function heatColor(value, max) {
+  const position = heatPosition(value, max) * 2;
+  const segment = Math.min(1, Math.floor(position));
+  const fraction = position - segment;
+  const color = HEAT_COLORS[segment].map((start, i) =>
+    Math.round(start + fraction * (HEAT_COLORS[segment + 1][i] - start)));
+  return `rgb(${color.join(",")})`;
+}
+
+function workload(item) {
+  return item.unit_count ? item.file_count / item.unit_count : item.file_count;
 }
 
 const $ = (id) => document.getElementById(id);
+const themeSelector = $("themeSel");
+const themeKey = "worklog.theme";
+function setTheme(theme) {
+  if (![...themeSelector.options].some(option => option.value === theme)) return false;
+  document.documentElement.dataset.theme = theme;
+  themeSelector.value = theme;
+  return true;
+}
+let savedTheme;
+try { savedTheme = localStorage.getItem(themeKey); } catch { /* 本地文件可禁用存储 */ }
+if (!setTheme(query.get("theme"))) setTheme(savedTheme || "midnight");
+themeSelector.addEventListener("change", () => {
+  setTheme(themeSelector.value);
+  try { localStorage.setItem(themeKey, themeSelector.value); } catch { /* 本次浏览仍可切换 */ }
+  if (query.has("theme")) {
+    const url = new URL(location.href);
+    url.searchParams.set("theme", themeSelector.value);
+    try { history.replaceState(null, "", url); } catch { /* file:// 下由浏览器决定 */ }
+  }
+});
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const fmt = (d) => { const [, m, dd] = d.split("-"); return `${Number(m)}/${Number(dd)}`; };
 const nf = (n) => Number(n || 0).toLocaleString("en-US");
@@ -87,16 +121,21 @@ function renderHeadline(p) {
 
 function renderLegend(p) {
   if (state.mode === "heat") {
-    const swatches = ["1", "2-3", "4-8", "9-20", "21+"]
-      .map(
-        (label, i) =>
-          `<span class="k"><span class="dot" style="background:${HEAT_BUCKETS[i].color}"></span>${label}</span>`
-      )
-      .join("");
-    $("legend").innerHTML =
-      `<span class="k" style="color:#8f8a76">变更文件数</span>` +
-      swatches +
-      `<span class="k" style="color:#6f6b58">白＝少　紫＝多　空心条＝无文件产出</span>`;
+    const max = heatMaximum(p.units);
+    const tickValues = [0, 0.25, 0.5, 0.75, 1].map(position => {
+      const raw = HEAT_REFERENCE * Math.expm1(position * Math.log1p(max / HEAT_REFERENCE));
+      return Number(raw.toFixed(raw < 10 ? 1 : 0));
+    });
+    const ticks = tickValues.map(value =>
+      `<span style="left:${heatPosition(value, max) * 100}%">${nf(value)}</span>`);
+    const colors = HEAT_COLORS.map(rgb => `rgb(${rgb.join(",")})`).join(", ");
+    $("legend").innerHTML = `<span class="scale-label">每小时变更文件数 · 指数刻度</span>
+      <div class="heat-scale" aria-label="文件数按指数递增，0 到 ${max} 个文件">
+        <div class="scale-ramp" style="background:linear-gradient(to right in srgb, ${colors})"></div>
+        <div class="scale-axis">${ticks.join("")}</div>
+      </div><span class="scale-note">主题取同小时组内均值</span>
+      <span class="k">白色 · 该小时无产出</span>
+      ${p.units.some(u => u.date_only.length) ? '<span class="k">斜线 · 仅知日期</span>' : ""}`;
     return;
   }
   const present = [...new Set(p.units.map((u) => u.kind))];
@@ -111,73 +150,52 @@ function renderLegend(p) {
 }
 
 /* ---------------- 行结构 ---------------- */
+function topicSections(p) {
+  const topics = [...p.groups];
+  const pending = new Map();
+  for (const u of p.units) {
+    if (u.group_id) continue;
+    if (!pending.has(u.project_id)) {
+      pending.set(u.project_id, { id: u.id, title: "待归组", project_id: u.project_id,
+        project: u.project, updated_ms: u.updated_ms, pending: true, units: [] });
+    }
+    pending.get(u.project_id).units.push(u);
+  }
+  topics.push(...pending.values());
+  topics.sort((a, b) => b.updated_ms - a.updated_ms || a.id.localeCompare(b.id));
+  if (state.order === "recent") return [{ topics }];
+
+  const projects = new Map();
+  for (const topic of topics) {
+    if (!projects.has(topic.project_id)) {
+      projects.set(topic.project_id, { name: topic.project, topics: [] });
+    }
+    projects.get(topic.project_id).topics.push(topic);
+  }
+  return [...projects.values()];
+}
+
+function topicName(g) {
+  return state.order === "recent" ? `${g.title} · ${g.project}` : g.title;
+}
+
 function buildRows(p) {
   const rows = [];
-  const grouped = new Set();
-  // 统一按「最近一次有动静」（end_day）倒序，同 end_day 再比 start_day
-  const byRecent = (a, b) => {
-    if (a.end_day !== b.end_day) return a.end_day > b.end_day ? -1 : 1;
-    if (a.start_day !== b.start_day) return a.start_day > b.start_day ? -1 : 1;
-    return 0;
-  };
-  const gs = [...p.groups].sort(byRecent);
-
-  gs.forEach((g, gi) => {
-    g.units.forEach((u) => grouped.add(u.id));
-    rows.push({ type: "group", g, key: g.end_day, sub: 0, seq: gi * 100 });
-    if (state.expanded.has(g.id)) {
-      const members = [...g.units].sort(byRecent);
-      members.forEach((u, ui) =>
-        rows.push({ type: "unit", u, g, key: g.end_day, sub: 1, seq: gi * 100 + ui + 1 })
-      );
+  for (const section of topicSections(p)) {
+    if (section.name && p.project.id === "all") rows.push({type: "heading", label: section.name});
+    for (const g of section.topics) {
+      rows.push(g.pending ? {type: "heading", label: topicName(g)} : {type: "group", g});
+      if (g.pending || state.expanded.has(g.id)) {
+        for (const u of g.units) rows.push({type: "unit", u});
+      }
     }
-  });
-
-  p.units
-    .filter((u) => !grouped.has(u.id))
-    .forEach((u, i) => rows.push({ type: "unit", u, g: null, key: u.end_day, sub: 0, seq: 9000 + i }));
-
-  rows.sort((a, b) => (a.key > b.key ? -1 : a.key < b.key ? 1 : a.seq - b.seq));
-
-  // 长跨度下分组可能上百个，整页拉成几千像素反而没法看；默认只留最近的一段
-  const LIMIT = 60;
-  const showAll = new URLSearchParams(location.search).get("all") === "1";
-  state.truncated = 0;
-  if (!showAll && rows.length > LIMIT) {
-    state.truncated = rows.length - LIMIT;
-    return rows.slice(0, LIMIT);
   }
   return rows;
 }
 
-/* 把「中间只隔着折叠周末」的相邻段并成一条，避免窄列把泳道切断 */
-function bridgeQuietSegs(segs, quietSet) {
-  if (!segs.length) return segs;
-  const nextDay = (d) => {
-    const t = new Date(d + "T00:00:00Z");
-    t.setUTCDate(t.getUTCDate() + 1);
-    return t.toISOString().slice(0, 10);
-  };
-  const out = [[...segs[0]]];
-  for (let i = 1; i < segs.length; i++) {
-    const prev = out[out.length - 1];
-    const cur = segs[i];
-    let d = nextDay(prev[1]);
-    let onlyQuiet = true;
-    while (d < cur[0]) {
-      if (!quietSet.has(d)) { onlyQuiet = false; break; }
-      d = nextDay(d);
-    }
-    if (onlyQuiet) out[out.length - 1] = [prev[0], cur[1]];
-    else out.push([...cur]);
-  }
-  return out;
-}
-
-
-/* ---------------- 悬停概览浮层 ---------------- */
-const TIP_PAD = 14;
 let tipOn = false;
+let tipTimer;
+let tipTarget = null;
 
 function kindBadge(kind) {
   const m = KIND[kind] || { label: kind, color: "#888" };
@@ -191,24 +209,24 @@ function tipHtml(el) {
   const p = state.payload;
   if (!p) return "";
   const id = el.dataset.id;
-  const isGroup = el.dataset.kind === "group";
+  const isGroup = (el.dataset.kind || el.dataset.lane) === "group";
 
   if (isGroup) {
     const g = p.groups.find((x) => x.id === id);
     if (!g) return "";
     const members = (g.units || [])
       .slice(0, 4)
-      .map((u) => `<li>${esc(clip(u.title, 26))}<span>${fmt(u.start_day)}</span></li>`)
+      .map((u) => `<li>${esc(clip(u.title, 26))}<span>${fmt(u.end_day)}</span></li>`)
       .join("");
-    return `<div class="tip-head">${kindBadge(g.kind)}<b>${esc(g.title)}</b></div>
-      <div class="tip-meta">${fmt(g.start_day)} – ${fmt(g.end_day)} · ${g.unit_count} 项 · 文件 ${g.file_count} · +${nf(g.additions)} / −${nf(g.deletions)}</div>
+    return `<div class="tip-head">${kindBadge(g.kind)}<b>${esc(topicName(g))}</b></div>
+      <div class="tip-meta">${fmt(g.start_day)} – ${fmt(g.end_day)} · ${g.unit_count} 项 · 组均 ${Number(workload(g).toFixed(1))} 个文件 · +${nf(g.additions)} / −${nf(g.deletions)}</div>
       ${members ? `<ul class="tip-list">${members}</ul>` : ""}
       <div class="tip-hint">点击展开 / 收起这一组</div>`;
   }
 
   const u = p.units.find((x) => x.id === id);
   if (!u) return "";
-  const head = (u.detail && u.detail.headline) || u.summary || autoSummary(u);
+  const head = (u.detail && u.detail.headline) || u.summary || "待整理：需要回查本段会话，补充任务经过和结果。";
   const grp = groupOf(p, u.id);
   const projTag = p.project.id === "all" && u.project ? `${esc(u.project)} · ` : "";
   return `<div class="tip-head">${kindBadge(u.kind)}<b>${esc(u.title)}</b></div>
@@ -218,80 +236,80 @@ function tipHtml(el) {
     <div class="tip-hint">点击跳到详情卡片</div>`;
 }
 
-const tipSize = { w: 340, h: 160 };
-let tipRect = null;
-let tipTimer = 0;
-let tipRaf = 0;
-let tipLastEv = null;
-
 function showTip(el, ev) {
   const html = tipHtml(el);
   if (html) showTipHtml(html, ev);
 }
 
 function showTipHtml(html, ev) {
-  const fo = document.getElementById("tipFo");
-  const inner = document.getElementById("tipInner");
-  if (!fo || !inner) return;
-
+  const inner = $("tipInner");
   inner.innerHTML = html;
-  // 内容变了才量一次，量完缓存，mousemove 不再读布局
-  tipSize.w = Math.ceil(inner.offsetWidth) || 340;
-  tipSize.h = Math.ceil(inner.offsetHeight) || 160;
-  const svg = document.querySelector(".gantt svg");
-  tipRect = svg ? svg.getBoundingClientRect() : null;
-  fo.setAttribute("opacity", "1");
-  placeTip(ev);
+  inner.hidden = false;
   tipOn = true;
+  placeTip(ev);
 }
 
 function placeTip(ev) {
-  const inner = document.getElementById("tipInner");
-  const svg = document.querySelector(".gantt svg");
-  if (!inner || !svg) return;
-  const r = tipRect || svg.getBoundingClientRect();
-  const svgW = svg.width.baseVal.value;
-  const svgH = svg.height.baseVal.value;
-
-  let x = ev.clientX - r.left + 18;
-  let y = ev.clientY - r.top + 20;
-  if (x + tipSize.w > svgW - 6) x = ev.clientX - r.left - tipSize.w - 18;
-  if (y + tipSize.h > svgH - 6) y = ev.clientY - r.top - tipSize.h - 16;
-
-  // transform 不改变布局盒，不会撑大 ganttwrap 的 scrollWidth（用 x/y 属性会）
-  inner.style.transform = `translate3d(${Math.max(4, x)}px, ${Math.max(4, y)}px, 0)`;
+  const inner = $("tipInner");
+  const x = ev.clientX + 18 + inner.offsetWidth <= window.innerWidth
+    ? ev.clientX + 18 : ev.clientX - inner.offsetWidth - 12;
+  const y = ev.clientY + 16 + inner.offsetHeight <= window.innerHeight
+    ? ev.clientY + 16 : ev.clientY - inner.offsetHeight - 12;
+  inner.style.left = Math.max(4, x) + "px";
+  inner.style.top = Math.max(4, y) + "px";
 }
 
 function hideTip() {
-  const fo = document.getElementById("tipFo");
-  if (fo) fo.setAttribute("opacity", "0");
+  clearTimeout(tipTimer);
+  tipTarget = null;
   tipOn = false;
+  $("tipInner").hidden = true;
 }
 
-function scheduleTip(ev) {
-  tipLastEv = ev;
-  if (tipRaf) return;
-  tipRaf = requestAnimationFrame(() => {
-    tipRaf = 0;
-    if (tipOn && tipLastEv) placeTip(tipLastEv);
+function bindGantt(box) {
+  const highlightPair = (e, on) => {
+    const row = e.target.closest(".row");
+    if (!row || row.contains(e.relatedTarget)) return;
+    const other = row.dataset.lane ? $("taskRail") : $("gantt");
+    other.querySelector(`.row[data-id="${CSS.escape(row.dataset.id)}"]`)?.classList.toggle("is-hover", on);
+  };
+  box.addEventListener("mouseover", e => highlightPair(e, true));
+  box.addEventListener("mouseout", e => highlightPair(e, false));
+  box.addEventListener("click", e => {
+    const row = e.target.closest(".row");
+    if (!row || state.suppressClick) return;
+    const id = row.dataset.id;
+    if ((row.dataset.kind || row.dataset.lane) === "group") {
+      state.expanded.has(id) ? state.expanded.delete(id) : state.expanded.add(id);
+      renderGantt(state.payload);
+    } else openCard(id);
   });
-}
-
-function bindTip(box) {
-  box.querySelectorAll("g.row").forEach((g) => {
-    // 悬停 70ms 才弹：鼠标快速扫过时不触发测量，避免长跨度视图下频繁重排
-    g.addEventListener("mouseenter", (e) => {
-      clearTimeout(tipTimer);
-      tipTimer = setTimeout(() => showTip(g, e), 70);
-    });
-    g.addEventListener("mousemove", (e) => {
-      if (tipOn) scheduleTip(e);
-    });
-    g.addEventListener("mouseleave", () => {
-      clearTimeout(tipTimer);
-      hideTip();
-    });
+  box.addEventListener("mousemove", e => {
+    if (e.buttons) { hideTip(); return; }
+    const target = e.target.closest("[data-hour], [data-date-only], .ach-hit, .row");
+    if (target === tipTarget) {
+      if (tipOn) placeTip(e);
+      return;
+    }
+    hideTip();
+    if (!target) return;
+    tipTarget = target;
+    tipTimer = setTimeout(() => {
+      if (target.matches(".ach-hit")) return showTipHtml(dayAchHtml(target.dataset.day), e);
+      const row = target.closest(".row");
+      let html = tipHtml(row);
+      if (target.dataset.hour) {
+        const [day, hour] = target.dataset.hour.split("T");
+        const value = Number(target.dataset.value);
+        const count = value ? (row.dataset.lane === "group" ? "组均 " : "") + nf(value) + " 个变更文件" : "该小时无文件产出";
+        html = `<div class="tip-hour">${day} · ${hour}:00–${hour}:59　${count}</div>` + html;
+      } else if (target.dataset.dateOnly) {
+        html = `<div class="tip-hour">${target.dataset.dateOnly} · 有记录缺少具体小时</div>` + html;
+      }
+      showTipHtml(html, e);
+    }, 70);
   });
+  box.addEventListener("mouseleave", hideTip);
 }
 
 function dayAchHtml(day) {
@@ -310,257 +328,195 @@ function dayAchHtml(day) {
     ${rows ? `<ul class="ach-list">${rows}</ul>` : `<div class="tip-body">这天还没拿到成就，继续加油</div>`}`;
 }
 
-/* ---------------- 甘特（新日期在左，空闲周末折叠） ---------------- */
-function renderGantt(p) {
-  const box = $("gantt");
-  const avail = $("ganttwrap").clientWidth - 4;
-  const labelW = 300;
-  const quietW = 6;
-
-  const activeDates = new Set();
-  p.units.forEach((u) => u.active.forEach((d) => activeDates.add(d)));
-
-  const cols = [...p.days]
-    .reverse()
-    .map((d) => ({ ...d, quiet: d.weekend && !activeDates.has(d.date) }));
-
-  const activeCount = cols.filter((c) => !c.quiet).length || 1;
-  const quietCount = cols.length - activeCount;
-  const quietSet = new Set(cols.filter((c) => c.quiet).map((c) => c.date));
-  const dayW = Math.max(15, Math.floor((avail - labelW - quietW * quietCount - 6) / activeCount));
-
-  const pos = {};
-  let cursor = labelW;
-  cols.forEach((c) => {
-    const w = c.quiet ? quietW : dayW;
-    pos[c.date] = { x: cursor, w };
-    cursor += w;
+function dayColumns(p, available) {
+  const active = new Set(p.units.flatMap(u => u.active));
+  const days = [...p.days].reverse();
+  const quiet = days.filter(d => d.weekend && !active.has(d.date)).length;
+  const dayWidth = Math.max(15, Math.floor((available - 6 * quiet) / Math.max(1, days.length - quiet)));
+  let x = 0;
+  return days.map(d => {
+    const compact = d.weekend && !active.has(d.date);
+    const w = compact ? 6 : dayWidth;
+    const col = {...d, x, w, compact};
+    x += w;
+    return col;
   });
-  const svgW = cursor + 6;
+}
 
-  const headerH = 76;          // 日期行 + 成就行
-  const achTop = 50;
-  const chartH = 74;           // 底部日柱状图
+// 连续有产出的日期共享一根条，仅裁剪首尾。列内的时间从右向左递增。
+function workloadBands(item, cols) {
+  const productive = new Set(Object.entries(item.hour_files).filter(([, n]) => n > 0).map(([h]) => h.slice(0, 10)));
+  const runs = [];
+  let run = [];
+  for (const col of cols) {
+    if (!productive.has(col.date)) { run = []; continue; }
+    if (!run.length) runs.push(run);
+    run.push(col);
+  }
+  return runs.map(days => {
+    const newest = days[0], oldest = days[days.length - 1];
+    const last = item.day_bounds[newest.date][1], first = item.day_bounds[oldest.date][0];
+    const position = (col, hour) => col.x + col.w * (1 - hour / 24);
+    const left = position(newest, last), right = position(oldest, first);
+    const slices = [];
+    for (const col of days) {
+      for (let h = 23; h >= 0; h--) {
+        const x = Math.max(left, position(col, h + 1));
+        const end = Math.min(right, position(col, h));
+        if (end <= x) continue;
+        const hour = col.date + "T" + String(h).padStart(2, "0");
+        slices.push({hour, value: item.hour_files[hour] || 0, x, end});
+      }
+    }
+    // 单点和极短记录在日列中保留可见宽度，不会伸入相邻的空白日。
+    if (newest === oldest && Math.floor(first) === Math.floor(last) && right - left < 2) {
+      const x = Math.max(newest.x, Math.min(newest.x + newest.w - 2, (left + right) / 2 - 1));
+      const hour = newest.date + "T" + String(Math.floor(first)).padStart(2, "0");
+      return [{x, end: x + 2, hour, value: item.hour_files[hour]}];
+    }
+    return slices;
+  });
+}
+
+function renderBand(slices, id, y, height, color, heat, max, group) {
+  const x = slices[0].x, width = slices[slices.length - 1].end - x;
+  let fill = color, defs = "", hits = "";
+  if (heat) fill = heatColor(slices[0].value, max);
+  if (heat && slices.some(s => s.value !== slices[0].value)) {
+    const stops = [];
+    const center = s => ((s.x + s.end) / 2 - x) / width;
+    for (let i = 0; i < slices.length; i++) {
+      const s = slices[i], prev = slices[i-1];
+      if (prev?.value === s.value && slices[i+1]?.value === s.value) continue;
+      const offset = center(s);
+      // 相邻小时以中心的真实颜色为锚点。跨越色标中点时，保留图例中的红色。
+      if (prev && prev.value !== s.value) {
+        const a = heatPosition(prev.value, max), b = heatPosition(s.value, max);
+        if (Math.min(a,b) < 0.5 && Math.max(a,b) > 0.5) {
+          const start = center(prev);
+          const red = start + (offset - start) * (0.5 - a) / (b - a);
+          stops.push(`<stop offset="${red}" stop-color="rgb(${HEAT_COLORS[1].join(",")})"/>`);
+        }
+      }
+      stops.push(`<stop offset="${offset}" stop-color="${heatColor(s.value, max)}"/>`);
+    }
+    defs = `<defs><linearGradient id="${id}">${stops.join("")}</linearGradient></defs>`;
+    fill = `url(#${id})`;
+  }
+  for (const s of slices) {
+    hits += `<rect x="${s.x}" y="${y}" width="${s.end-s.x}" height="${height}" fill="transparent" data-hour="${s.hour}" data-value="${s.value}"/>`;
+  }
+  return defs + `<rect class="bar-rect${group ? "" : " child"}" x="${x}" y="${y}" width="${width}" height="${height}" rx="3" fill="${fill}"/>` + hits;
+}
+
+function renderGantt(p) {
+  hideTip();
+  const box = $("gantt");
+  const rail = $("taskRail");
+  const labelW = rail.clientWidth;
+  const days = dayColumns(p, $("timelineScroll").clientWidth);
+  const width = days.reduce((w, col) => w + col.w, 0);
+  const positions = new Map(days.map(col => [col.date, col]));
   const rows = buildRows(p);
-  const heights = rows.map((r) => (r.type === "group" ? 38 : 28));
-  const rowsH = heights.reduce((a, b) => a + b, 0);
-  const H = headerH + rowsH + chartH + 12;
-
-  let s = `<svg width="${svgW}" height="${H}" viewBox="0 0 ${svgW} ${H}" xmlns="http://www.w3.org/2000/svg">`;
-
-  cols.forEach((c) => {
-    const { x, w } = pos[c.date];
-    if (c.quiet) {
-      s += `<rect x="${x}" y="0" width="${w}" height="${H}" fill="${COL.quiet}"></rect>`;
-      s += `<circle cx="${x + w / 2}" cy="30" r="1.8" fill="#5d5947"/>`;
+  const headerH = 76;
+  const rowHeight = row => row.type === "group" ? 38 : 28;
+  const chartY = headerH + rows.reduce((h, row) => h + rowHeight(row), 0) + 12;
+  const H = chartY + 70;
+  const heat = state.mode === "heat";
+  const max = heatMaximum(p.units);
+  box.classList.toggle("workload-view", heat);
+  const svg = w => `<svg width="${w}" height="${H}" viewBox="0 0 ${w} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  let left = svg(labelW);
+  let right = svg(width);
+  right += `<defs>
+    <pattern id="date-hatch" patternUnits="userSpaceOnUse" width="7" height="7"><path d="M0 7L7 0" stroke="var(--ink3)" opacity=".6"/></pattern>
+    </defs>`;
+  left += `<text x="8" y="46" class="axis-label">← 新 · 旧 →</text>
+    <text x="8" y="65" class="axis-label">成就</text>`;
+  days.forEach(day => {
+    const {x, w} = day, center = x + w / 2;
+    if (day.weekend) right += `<rect x="${x}" width="${w}" height="${H}" fill="${day.compact ? COL.quiet : COL.weekend}"/>`;
+    right += `<path d="M${x} 50V${H}" stroke="${day.weekday === "日" ? COL.week : COL.grid}"/>`;
+    if (day.compact) {
+      right += `<circle cx="${center}" cy="29" r="1.5" fill="var(--ink3)"/>`;
       return;
     }
-    if (c.weekend) s += `<rect x="${x}" y="0" width="${w}" height="${H}" fill="${COL.weekend}"/>`;
-    s += `<text x="${x + w / 2}" y="19" text-anchor="middle" font-size="11.5" fill="${COL.head}">${c.weekday}</text>`;
-    // 列太窄时不标日期，只在周一起头标一次，避免日期叠在一起
-    if (dayW >= 26 || c.is_monday) {
-      s += `<text x="${x + w / 2}" y="38" text-anchor="middle" font-size="11" fill="${c.weekend ? "#57543f" : "#6a6653"}">${c.md}</text>`;
-    }
-    s += `<line x1="${x}" y1="${achTop}" x2="${x}" y2="${H}" stroke="${COL.grid}" stroke-width="0.5"/>`;
-  });
-
-  // 周分隔：相邻列跨周处画一条线
-  const weekKey = (d) => {
-    const t = new Date(d + "T00:00:00Z");
-    const off = (t.getUTCDay() + 6) % 7;
-    t.setUTCDate(t.getUTCDate() - off);
-    return t.toISOString().slice(0, 10);
-  };
-  cols.forEach((c, i) => {
-    if (i === 0 || weekKey(cols[i - 1].date) !== weekKey(c.date)) {
-      s += `<line x1="${pos[c.date].x}" y1="${achTop}" x2="${pos[c.date].x}" y2="${H}" stroke="${COL.week}" stroke-width="1"/>`;
+    right += `<text x="${center}" y="20" text-anchor="middle" class="date-heading">${day.weekday}</text>`;
+    if (w >= 26 || day.is_monday) right += `<text x="${center}" y="38" text-anchor="middle" class="date-heading">${day.md}</text>`;
+    const badges = (p.achievements[day.date] || []).slice(0, Math.max(1, Math.floor(w / 17)));
+    if (badges.length) {
+      right += w < 20 ? `<circle cx="${center}" cy="64" r="2" fill="var(--accent)"/>`
+        : `<text x="${center}" y="67" text-anchor="middle" font-size="12">${badges.map(b => b.icon).join(" ")}</text>`;
+      right += `<rect class="ach-hit" x="${x}" y="50" width="${w}" height="25" fill="transparent" data-day="${day.date}"/>`;
     }
   });
-  s += `<line x1="${svgW - 2}" y1="${achTop}" x2="${svgW - 2}" y2="${H}" stroke="${COL.week}" stroke-width="1"/>`;
-
-  s += `<line x1="${labelW}" y1="${headerH}" x2="${svgW}" y2="${headerH}" stroke="${COL.base}" stroke-width="0.5"/>`;
-  s += `<text x="0" y="30" font-size="11.5" fill="${COL.head}">工作分组</text>`;
-  s += `<text x="0" y="${achTop + 17}" font-size="10" fill="#4d4a3c">成就</text>`;
-  s += `<text x="${labelW - 60}" y="30" font-size="10" fill="#4d4a3c" text-anchor="end">← 新 · 旧 →</text>`;
-  s += `<line x1="${labelW - 52}" y1="0" x2="${labelW - 52}" y2="${H}" stroke="${COL.grid}" stroke-width="0.5"/>`;
-
-  if (!rows.length) {
-    const latest = p.summary && p.summary.latest_day;
-    const outside = latest && latest < p.range.from;
-    const msg = outside
-      ? `这段时间没有记录　·　最近一次是 ${fmt(latest)}，换个更大的时间窗`
-      : "这段时间没有记录";
-    s += `<text x="${labelW + 12}" y="${headerH + 26}" font-size="12" fill="${COL.head}">${esc(msg)}</text>`;
-    box.innerHTML = s + "</svg>";   // 必须写回：否则切到没数据的来源时，甘特会留着上一次的内容
-    return;
-  }
-
+  right += `<path d="M0 50H${width} M0 ${headerH}H${width}" stroke="var(--line)"/>`;
   let y = headerH;
-  rows.forEach((row) => {
-    const h = row.type === "group" ? 38 : 28;
-    const mid = y + h / 2;
-    const isGroup = row.type === "group";
-    const item = isGroup ? row.g : row.u;
-    const m = KIND[item.kind] || { label: item.kind, color: "#888" };
-    const open = isGroup && state.expanded.has(row.g.id);
-    const indent = row.sub ? 8 : 0;
-    const labX = isGroup ? 18 : 26;
-    const maxPx = isGroup ? labelW - 108 - labX : labelW - 26 - labX;
-    const segs = bridgeQuietSegs(isGroup ? row.g.segs : row.u.segs, quietSet);
-
-    s += `<g class="row" data-kind="${isGroup ? "group" : "unit"}" data-id="${item.id}">`;
-    s += `<rect class="rowbg" x="0" y="${y}" width="${svgW}" height="${h}"/>`;
-    s += `<rect class="rowline" x="0" y="${y}" width="${svgW}" height="1"/>`;
-    s += `<rect class="accent" x="0" y="${y + 3}" width="3" height="${h - 6}" rx="1.5" fill="${m.color}" opacity="0"/>`;
-
-    if (isGroup) {
-      s += open
-        ? `<polygon class="caret open" points="6,${mid - 6} 16,${mid - 6} 11,${mid + 1}"/>`
-        : `<polygon class="caret" points="8,${mid - 5} 8,${mid + 5} 14,${mid}"/>`;
-    }
-
-    s += `<text class="rowlab ${isGroup ? "grouplab" : ""}" x="${labX}" y="${mid + 4}">${esc(clipPx(item.title, maxPx))}</text>`;
-
-    if (isGroup) {
-      const cnt =
-        row.g.unit_count === row.g.unit_count_total
-          ? `${row.g.unit_count} 项`
-          : `${row.g.unit_count}/${row.g.unit_count_total} 项`;
-      const meta =
-        state.project === "all"
-          ? `${clip(row.g.project || "", 8)} · ${cnt}`
-          : `${cnt} · ${row.g.file_count} 文件`;
-      s += `<text class="rowmeta" x="${labelW - 32}" y="${mid + 4}" text-anchor="end">${esc(meta)}</text>`;
-    }
-    s += `<rect class="kinddot" x="${labelW - 22}" y="${mid - 3.5}" width="7" height="7" rx="1.5" fill="${item.design ? "none" : m.color}" stroke="${m.color}" stroke-width="${item.design ? 1 : 0}" ${item.design ? 'stroke-dasharray="2 1.5"' : ""}/>`;
-
-    segs.forEach(([a, b]) => {
-      const pa = pos[a], pb = pos[b];
-      if (!pa || !pb) return;
-      const left = Math.min(pa.x, pb.x);
-      const right = Math.max(pa.x + pa.w, pb.x + pb.w);
-      const x = left + 3;
-      const w = Math.max(5, right - left - 6);
-      const bh = isGroup ? 16 : 11;
-      const tip = isGroup
-        ? `${item.title}｜${row.g.unit_count} 项｜${row.g.start_day} ~ ${row.g.end_day}｜${m.label}｜文件 ${row.g.file_count}`
-        : `${item.title}｜${item.start_day} ~ ${item.end_day}｜活跃 ${item.active.length} 天｜${m.label}｜文件 ${item.file_count}`;
-      const heatVal = isGroup
-        ? Math.round(item.file_count / Math.max(item.unit_count || 1, 1))
-        : item.file_count;
-      const barFill = state.mode === "heat" ? heatColor(heatVal) : m.color;
-      if (item.design) {
-        const stroke = state.mode === "heat" ? "#8f8a76" : m.color;
-        s += `<rect class="bar-rect ${isGroup ? "" : "child"}" x="${x}" y="${mid - bh / 2}" width="${w}" height="${bh}" rx="3" fill="none" stroke="${stroke}" stroke-width="1" stroke-dasharray="3 2"></rect>`;
-      } else {
-        const edge = state.mode === "heat" ? ' stroke="rgba(255,255,255,0.14)" stroke-width="0.8"' : "";
-        s += `<rect class="bar-rect ${isGroup ? "" : "child"}" x="${x}" y="${mid - bh / 2}" width="${w}" height="${bh}" rx="3" fill="${barFill}"${edge}></rect>`;
+  for (const row of rows) {
+    const h = rowHeight(row), mid = y + h / 2;
+    if (row.type === "heading") {
+      const band = w => `<rect x="0" y="${y}" width="${w}" height="${h}" fill="var(--elevated)"/>`;
+      left += band(labelW) + `<text x="8" y="${mid+4}" fill="var(--ink)" font-size="13">${esc(clipPx(row.label, labelW-15))}<title>${esc(row.label)}</title></text>`;
+      right += band(width);
+    } else {
+      const group = row.type === "group", item = group ? row.g : row.u;
+      const color = (KIND[item.kind] || {}).color || "#888";
+      const attrs = `class="row" data-id="${esc(item.id)}"`;
+      const bg = w => `<rect class="rowbg" y="${y}" width="${w}" height="${h}"/>`;
+      left += `<g ${attrs} data-kind="${row.type}">${bg(labelW)}`;
+      right += `<g ${attrs} data-lane="${row.type}">${bg(width)}`;
+      const labX = group ? 18 : 26;
+      const suffix = group && state.order === "recent";
+      const maxPx = labelW - labX - (group ? 65 : 20);
+      left += `<text class="rowlab ${group ? "grouplab" : ""}" x="${labX}" y="${mid+(suffix ? -1 : 4)}">${esc(clipPx(item.title,maxPx))}</text>`;
+      if (suffix) left += `<text class="project-suffix" x="${labX}" y="${mid+13}">· ${esc(clipPx(item.project,maxPx,10))}</text>`;
+      if (group) {
+        const count = item.unit_count === item.unit_count_total ? item.unit_count : `${item.unit_count}/${item.unit_count_total}`;
+        left += `<text class="caret" x="4" y="${mid+4}">${state.expanded.has(item.id) ? "▾" : "▸"}</text>
+          <text class="rowmeta" x="${labelW-24}" y="${mid+4}" text-anchor="end">${count} 项</text>`;
       }
-    });
-
-    s += `</g>`;
+      left += `<rect class="kinddot" x="${labelW-16}" y="${mid-3.5}" width="7" height="7" rx="1.5" stroke="${color}" fill="${item.design ? "none" : color}"/></g>`;
+      for (const date of item.date_only) {
+        const col = positions.get(date);
+        right += `<rect data-date-only="${date}" x="${col.x+1}" y="${y+h-7}" width="${col.w-2}" height="5" fill="url(#date-hatch)"/>`;
+      }
+      const bh = group ? 16 : 11;
+      workloadBands(item, days).forEach((band, i) => {
+        right += renderBand(band, `band-${y}-${i}`, mid-bh/2, bh, color, heat, max, group);
+      });
+      right += "</g>";
+    }
     y += h;
-  });
-
-  s += `<foreignObject id="tipFo" x="0" y="0" width="${svgW}" height="${H}" opacity="0" style="pointer-events:none">
-    <div xmlns="http://www.w3.org/1999/xhtml" class="tipwrap">
-      <div class="tipbox" id="tipInner"></div>
-    </div>
-  </foreignObject>`;
-  // ---- 成就行（表头下方）：emoji + 整列热区 ----
-  const BADGE_COLOR = {
-    sunrise: "#FAC775", early: "#EF9F27", late: "#F0997B", night: "#85B7EB",
-    marathon: "#5DCAA5", longhaul: "#1D9E75", heavy: "#AFA9EC", burst: "#7F77DD",
-    weekend: "#97C459", multi: "#ED93B1", week7: "#FAC775", idle: "#888780",
-  };
-  cols.forEach((d) => {
-    const { x, w } = pos[d.date];
-    const list = (p.achievements || {})[d.date] || [];
-    if (list.length && w >= 8) {
-      if (w < 20) {
-        // 列太窄时 emoji 会糊成一条，退化成小色块，颜色取当天最重要的那个成就
-        const top = list[0];
-        s += `<rect x="${x + w / 2 - 1.8}" y="${achTop + 13}" width="3.6" height="3.6" rx="1" fill="${BADGE_COLOR[top.key] || "#888"}"/>`;
-      } else {
-        const show = list.slice(0, Math.max(1, Math.floor((w - 4) / 13)));
-        const totalW = show.length * 13;
-        const bx = x + Math.max(1, (w - totalW) / 2);
-        show.forEach((b, i) => {
-          s += `<text x="${bx + i * 13 + 6}" y="${achTop + 21}" font-size="11.5" text-anchor="middle"
-            font-family="'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif">${b.icon}</text>`;
-        });
-      }
-    }
-    // 整列热区：不用对准图标
-    s += `<rect class="ach-hit" x="${x}" y="${achTop + 2}" width="${Math.max(w - 1, 5)}" height="24" fill="transparent" data-day="${d.date}"/>`;
-  });
-  s += `<line x1="0" y1="${achTop}" x2="${svgW}" y2="${achTop}" stroke="${COL.grid}" stroke-width="0.5"/>`;
-
-  // ---- 底部日柱状图：高度 = 当日改动数 ----
-  const chartTop = headerH + rowsH + 8;
-  const chartBase = chartTop + 60;
-  const dailyMap = p.daily || {};
-  const maxDay = Math.max(1, ...Object.values(dailyMap).map((v) => v.n));
-  s += `<line x1="${labelW}" y1="${chartBase}" x2="${svgW}" y2="${chartBase}" stroke="${COL.base}" stroke-width="0.5"/>`;
-  s += `<text x="0" y="${chartTop + 14}" font-size="10.5" fill="${COL.head}">每日改动</text>`;
-  s += `<text x="0" y="${chartTop + 28}" font-size="10" fill="#565442">峰值 ${maxDay}</text>`;
-  cols.forEach((d) => {
-    const v = dailyMap[d.date];
-    const { x, w } = pos[d.date];
-    if (!v) return;
-    const bw = Math.max(3, Math.min(w - 6, 26));
-    const h = Math.max(3, (v.n / maxDay) * 58);
-    const bx = x + (w - bw) / 2;
-    const tip = `${d.md}｜改动 ${v.n} 处｜${fmtH(v.first)}–${fmtH(v.last)}（${v.span.toFixed(1)}h）`;
-    s += `<rect class="daybar" x="${bx}" y="${chartBase - h}" width="${bw}" height="${h}" rx="2" fill="#5DCAA5" opacity="0.72"><title>${esc(tip)}</title></rect>`;
-  });
-
-  box.innerHTML = s + "</svg>";
-
-  box.querySelectorAll("g.row").forEach((g) => {
-    g.addEventListener("click", () => {
-      if (state.suppressClick) return;
-      if (g.dataset.kind === "group") {
-        const id = g.dataset.id;
-        state.expanded.has(id) ? state.expanded.delete(id) : state.expanded.add(id);
-        renderGantt(state.payload);
-      } else {
-        openCard(g.dataset.id);
-      }
-    });
-  });
-
-  bindTip(box);
-
-  // 无鼠标环境下验收悬停效果：?demo=hover 点亮行，?demo=tip 弹出浮层
-  const demo = new URLSearchParams(location.search).get("demo");
-  box.querySelectorAll(".ach-hit").forEach((el) => {
-    el.addEventListener("mouseenter", (e) => showTipHtml(dayAchHtml(el.dataset.day), e));
-    el.addEventListener("mousemove", (e) => {
-      if (tipOn) scheduleTip(e);
-    });
-    el.addEventListener("mouseleave", hideTip);
-  });
-
-  if (demo === "hover" || demo === "tip" || demo === "ach") {
-    const rows = box.querySelectorAll("g.row");
-    if (rows[1]) rows[1].classList.add("is-hover");
-    if (demo === "hover" && rows[3]) rows[3].classList.add("is-hover");
-    if (demo === "ach") {
-      const hits = [...box.querySelectorAll(".ach-hit")].filter((el) => ((p.achievements || {})[el.dataset.day] || []).length);
-      const el = hits[0];
-      if (el) {
-        const r = el.getBoundingClientRect();
-        showTipHtml(dayAchHtml(el.dataset.day), { clientX: r.left + r.width / 2, clientY: r.bottom });
-      }
-    }
-    if (demo === "tip" && rows[1]) {
-      const bar = rows[1].querySelector("rect.bar-rect");
-      const r = bar ? bar.getBoundingClientRect() : null;
-      showTip(rows[1], { clientX: r ? r.left + r.width / 2 : 420, clientY: r ? r.top : 260 });
-    }
+  }
+  const peak = Math.max(1,...Object.values(p.daily).map(v => v.n));
+  left += `<text x="8" y="${chartY+14}" class="axis-label">每日改动</text>
+    <text x="8" y="${chartY+30}" class="axis-label">峰值 ${peak}</text>`;
+  for (const day of days) {
+    const daily = p.daily[day.date];
+    if (!daily) continue;
+    const height = Math.max(2, daily.n / peak * 52);
+    const w = Math.min(26, day.w - 2);
+    right += `<rect class="daybar" x="${day.x+(day.w-w)/2}" y="${chartY+56-height}" width="${w}" height="${height}" rx="2" fill="var(--accent)" opacity=".75"><title>${day.md} · ${daily.n} 处改动</title></rect>`;
+  }
+  if (!rows.length) right += `<text x="8" y="${headerH+16}" class="axis-label">这段时间没有记录</text>`;
+  rail.innerHTML = left + "</svg>";
+  box.innerHTML = right + "</svg>";
+  const demo = query.get("demo");
+  const demoRow = rail.querySelectorAll(".row")[1];
+  if (demoRow && demo === "hover") demoRow.classList.add("is-hover");
+  if (demoRow && demo === "tip") {
+    const r = demoRow.getBoundingClientRect();
+    showTip(demoRow, {clientX:r.right, clientY:r.top});
+  }
+  const achievement = box.querySelector(".ach-hit");
+  if (demo === "ach" && achievement) {
+    const r = achievement.getBoundingClientRect();
+    showTipHtml(dayAchHtml(achievement.dataset.day), {clientX:r.left, clientY:r.top});
   }
 }
+bindGantt($("ganttwrap"));
+$("timelineScroll").addEventListener("scroll", hideTip, {passive: true});
+window.addEventListener("scroll", hideTip, {passive: true});
 
 /* ---------------- 密度日历 ---------------- */
 function renderHeatmap(p) {
@@ -574,7 +530,7 @@ function renderHeatmap(p) {
   const W = leftPad + weeks * pitch;
   const H = topPad + 7 * pitch;
 
-  const shade = (n) => (n === 0 ? "#232319" : n <= 3 ? "#1a4d3f" : n <= 9 ? "#1d9e75" : n <= 24 ? "#5dcaa5" : "#9fe1cb");
+  const shade = (n) => (n === 0 ? "var(--panel)" : n <= 3 ? "color-mix(in srgb, var(--accent) 23%, var(--panel))" : n <= 9 ? "color-mix(in srgb, var(--accent) 45%, var(--panel))" : n <= 24 ? "color-mix(in srgb, var(--accent) 72%, var(--panel))" : "var(--accent)");
   const WK = ["一", "二", "三", "四", "五", "六", "日"];
 
   let s = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
@@ -589,7 +545,7 @@ function renderHeatmap(p) {
     const row = i % 7;
     const x = leftPad + wk * pitch;
     const yy = topPad + row * pitch;
-    s += `<rect class="hm-cell" x="${x}" y="${yy}" width="${cell}" height="${cell}" rx="2" fill="${shade(c.n)}" stroke="#3d3929" stroke-width="0.9"><title>${c.date}｜${c.n} 次文件变更</title></rect>`;
+    s += `<rect class="hm-cell" x="${x}" y="${yy}" width="${cell}" height="${cell}" rx="2" fill="${shade(c.n)}" stroke="var(--line)" stroke-width="0.9"><title>${c.date}｜${c.n} 次文件变更</title></rect>`;
     if (row === 0) {
       const mo = c.date.slice(5, 7);
       if (mo !== lastMonth && wk - lastLabelCol >= 2) {
@@ -626,9 +582,9 @@ function renderHours(p) {
     const h = v ? Math.max(2, (v / max) * H0) : 0;
     const alpha = 0.28 + 0.72 * (v / max);
     if (v) {
-      s += `<rect class="hourbar" x="${x}" y="${topPad + H0 - h}" width="${bw}" height="${h}" rx="1.5" fill="#5DCAA5" opacity="${alpha.toFixed(2)}"><title>${String(hh).padStart(2, "0")}:00–${String(hh).padStart(2, "0")}:59｜${v} 次改动</title></rect>`;
+      s += `<rect class="hourbar" x="${x}" y="${topPad + H0 - h}" width="${bw}" height="${h}" rx="1.5" fill="var(--accent)" opacity="${alpha.toFixed(2)}"><title>${String(hh).padStart(2, "0")}:00–${String(hh).padStart(2, "0")}:59｜${v} 次改动</title></rect>`;
     } else {
-      s += `<rect x="${x}" y="${topPad + H0 - 1}" width="${bw}" height="1" fill="#2a2a21"/>`;
+      s += `<rect x="${x}" y="${topPad + H0 - 1}" width="${bw}" height="1" fill="var(--line)"/>`;
     }
     if (hh % 6 === 0) {
       s += `<text x="${x + bw / 2}" y="${H - 4}" text-anchor="middle" font-size="10" fill="${COL.head}">${hh}</text>`;
@@ -676,7 +632,7 @@ function renderWeekly(p) {
       s += `<rect class="wbar" x="${x}" y="${yy}" width="${barW}" height="${hh}" fill="${(KIND[k] || {}).color || "#888"}"><title>${w.week} 起当周｜${(KIND[k] || { label: k }).label} ${v} 项</title></rect>`;
       acc += hh;
     });
-    if (!acc) s += `<rect x="${x}" y="${topPad + H0 - 2}" width="${barW}" height="2" fill="#2a2a21"/>`;
+    if (!acc) s += `<rect x="${x}" y="${topPad + H0 - 2}" width="${barW}" height="2" fill="var(--line)"/>`;
     s += `<text x="${x + barW / 2}" y="${H - 5}" text-anchor="middle" font-size="10" fill="${COL.head}">${w.md}</text>`;
     s += `</g>`;
   });
@@ -686,16 +642,6 @@ function renderWeekly(p) {
 /* ---------------- 卡片 ---------------- */
 function groupOf(p, id) {
   return p.groups.find((x) => x.units.some((u) => u.id === id));
-}
-
-function autoSummary(u) {
-  if (u.design) return "只有讨论，没有落文件。";
-  const top = (u.dirs || [])[0];
-  const span = u.active.length;
-  const parts = [`改了 ${u.file_count} 个文件，跨 ${span} 天`];
-  if (top) parts.push(`最集中在 ${top.dir === "." ? "项目根目录" : top.dir}（${top.files} 个文件）`);
-  parts.push(`+${nf(u.additions)} / −${nf(u.deletions)} 行`);
-  return parts.join("，") + "。";
 }
 
 function cardHtml(p, u) {
@@ -734,9 +680,9 @@ function cardHtml(p, u) {
 
   const head = det && det.headline
     ? esc(det.headline)
-    : esc(u.summary || autoSummary(u)) + (u.summary ? "" : '<span class="auto">（自动生成）</span>');
+    : esc(u.summary || "待整理：需要回查本段会话，补充任务经过和结果。");
 
-  return `<article class="card ${open ? "open" : ""}" id="card-${u.id}">
+  return `<article class="card ${open ? "open" : ""}" id="card-${esc(u.id)}">
     <header class="card-head">
       <span class="kbar" style="background:${m.color}"></span>
       <div class="chead-main">
@@ -752,6 +698,7 @@ function cardHtml(p, u) {
     </header>
     <div class="card-body">
       <p class="csum">${head}</p>
+      ${u.review_issues.length ? `<div class="sec">${esc(u.review_issues.join(" · "))} · ${esc(u.harness || "")} · ${esc(u.id)}</div>` : ""}
       ${sections}
       ${dirs ? `<div class="sec"><div class="sech">涉及目录</div><div class="dirs">${dirs}</div></div>` : ""}
       ${files ? `<div class="sec"><div class="sech">主要改动文件</div><table class="files"><tbody>${files}</tbody></table></div>` : ""}
@@ -766,8 +713,16 @@ function renderCards(p) {
     wrap.innerHTML = '<div class="empty">这段时间没有记录</div>';
     return;
   }
-  const ordered = [...p.units].sort((a, b) => (a.start_day > b.start_day ? -1 : 1));
-  wrap.innerHTML = ordered.map((u) => cardHtml(p, u)).join("");
+  const ordered = [];
+  const topicCards = (label, units) => {
+    ordered.push(...units);
+    return `<h4 class="topic-heading">${esc(label)} · ${units.length} 项</h4>` + units.map(u => cardHtml(p, u)).join("");
+  };
+  wrap.innerHTML = topicSections(p).map(project => {
+    const heading = project.name && p.project.id === "all" ? `<h3 class="project-heading">${esc(project.name)}</h3>` : "";
+    const topics = project.topics.map(g => topicCards(topicName(g), g.units)).join("");
+    return heading + topics;
+  }).join("");
 
   const op = new URLSearchParams(location.search).get("open");
   if (op !== null) {
@@ -823,11 +778,6 @@ function render(p) {
   if (new URLSearchParams(location.search).get("expand") === "1") {
     p.groups.forEach((g) => state.expanded.add(g.id));
   }
-  const md = new URLSearchParams(location.search).get("mode");
-  if (md === "heat" || md === "bars") {
-    state.mode = md;
-    document.querySelectorAll("#modes button").forEach((b) => b.classList.toggle("on", b.dataset.mode === md));
-  }
   document.title = `worklog · ${p.project.name}`;
   renderHeadline(p);
   renderLegend(p);
@@ -836,18 +786,32 @@ function render(p) {
   renderHours(p);
   renderWeekly(p);
   renderCards(p);
-  const cut = state.truncated
-    ? `　·　仅显示最近 ${60} 组，另有 ${state.truncated} 组未显示（URL 加 ?all=1 看全部）`
-    : "";
-  $("foot").textContent =
-    `${p.project.name} · 数据源：workbuddy / claude-code 等 harness 的本地记录（只读）` +
-    ` · 分组与摘要由 LLM 通过 MCP 写入${cut}`;
+  const pending = p.units.filter(u => !u.group_id).length;
+  const incomplete = p.units.filter(u => u.review_issues.length).length;
+  $("foot").textContent = `${p.project.name} · ${p.units.length} 个任务 · ${p.groups.length} 个主题 · ${pending} 项待归组 · ${incomplete} 项待补标题或详情`;
+  if (pending || incomplete) $("hlSub").insertAdjacentHTML("beforeend", `<span>整理中 · 待归组 ${pending} · 待补标题或详情 ${incomplete}</span>`);
+
+}
+
+const embedded = document.getElementById("worklog-snapshot");
+const snapshot = embedded ? JSON.parse(embedded.textContent) : null;
+
+async function readReport(url) {
+  if (snapshot) {
+    const {pathname, searchParams} = new URL(url, "http://localhost");
+    const source = snapshot.sources[searchParams.get("harness") || ""];
+    if (pathname === "/api/harnesses") return {harnesses: snapshot.harnesses};
+    if (pathname === "/api/projects") return {projects: source.projects};
+    return source.views[searchParams.get("project")][searchParams.get("days")];
+  }
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
 }
 
 async function loadHarnesses() {
   try {
-    const res = await fetch("/api/harnesses");
-    const data = await res.json();
+    const data = await readReport("/api/harnesses");
     const sel = $("harnSel");
     const total = data.harnesses.reduce((a, h) => a + h.units, 0);
     sel.innerHTML =
@@ -864,8 +828,7 @@ async function loadHarnesses() {
 async function loadProjects() {
   try {
     const url = "/api/projects" + (state.harness ? `?harness=${encodeURIComponent(state.harness)}` : "");
-    const res = await fetch(url);
-    const data = await res.json();
+    const data = await readReport(url);
     const sel = $("projSel");
     sel.innerHTML = data.projects
       .map((p) => `<option value="${esc(p.id)}">${esc(p.name)}（${p.units}）</option>`)
@@ -886,8 +849,7 @@ async function load() {
   try {
     const qs = `project=${encodeURIComponent(state.project)}&days=${state.days}` +
       (state.harness ? `&harness=${encodeURIComponent(state.harness)}` : "");
-    const res = await fetch(`/api/project?${qs}`);
-    render(await res.json());
+    render(await readReport(`/api/project?${qs}`));
   } catch (e) {
     $("hlSub").textContent = "读取失败：" + e.message;
   }
@@ -908,11 +870,34 @@ $("projSel").addEventListener("change", (e) => {
   load();
 });
 
+function markSelection(id, key, value) {
+  for (const button of $(id).querySelectorAll("button")) {
+    const active = button.dataset[key] === value;
+    button.classList.toggle("on", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+}
+
+markSelection("modes", "mode", state.mode);
+markSelection("grouping", "order", state.order);
+markSelection("ranges", "days", String(state.days));
+$("grouping").addEventListener("click", e => {
+  const button = e.target.closest("button");
+  if (!button || button.dataset.order === state.order) return;
+  state.order = button.dataset.order;
+  markSelection("grouping", "order", state.order);
+  if (state.payload) {
+    hideTip();
+    renderGantt(state.payload);
+    renderCards(state.payload);
+  }
+});
+
 $("modes").addEventListener("click", (e) => {
   const btn = e.target.closest("button");
   if (!btn || btn.dataset.mode === state.mode) return;
   state.mode = btn.dataset.mode;
-  document.querySelectorAll("#modes button").forEach((b) => b.classList.toggle("on", b === btn));
+  markSelection("modes", "mode", state.mode);
   if (state.payload) {
     renderLegend(state.payload);
     renderGantt(state.payload);
@@ -923,16 +908,17 @@ $("ranges").addEventListener("click", (e) => {
   const btn = e.target.closest("button");
   if (!btn) return;
   state.days = Number(btn.dataset.days);
-  document.querySelectorAll("#ranges button").forEach((b) => b.classList.toggle("on", b === btn));
+  markSelection("ranges", "days", btn.dataset.days);
   load();
 });
 
 /* 拖动平移 */
 (function enablePan() {
-  const wrap = $("ganttwrap");
+  const wrap = $("timelineScroll");
   let down = false, startX = 0, startLeft = 0, moved = 0;
 
   wrap.addEventListener("mousedown", (e) => {
+    if (e.target.closest("button")) return;
     down = true; moved = 0;
     startX = e.pageX;
     startLeft = wrap.scrollLeft;
@@ -972,11 +958,5 @@ if (hq) {
 
 const pq = new URLSearchParams(location.search).get("project");
 if (pq) state.project = pq;
-
-const dq = Number(new URLSearchParams(location.search).get("days"));
-if (dq) {
-  state.days = dq;
-  document.querySelectorAll("#ranges button").forEach((b) => b.classList.toggle("on", Number(b.dataset.days) === dq));
-}
 
 Promise.all([loadHarnesses(), loadProjects()]).then(load);

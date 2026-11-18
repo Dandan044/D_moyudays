@@ -101,7 +101,8 @@ def probe(target: str | None = None) -> dict:
         return {"mode": "single", "target": inspect(target)}
 
     home = pathlib.Path.home()
-    roots = [home, home / "AppData" / "Roaming", home / "AppData" / "Local"]
+    roots = [home, home / "AppData" / "Roaming", home / "AppData" / "Local",
+             home / ".config", home / ".local" / "share", home / "Library" / "Application Support"]
     candidates = []
     seen = set()
 

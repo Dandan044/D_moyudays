@@ -126,12 +126,13 @@ def connect(path: pathlib.Path | None = None) -> sqlite3.Connection:
 def ensure_columns(con: sqlite3.Connection) -> None:
     """给已存在的表补列（schema 演进用）。"""
     cols = {r[1] for r in con.execute("PRAGMA table_info(work_unit)")}
-    for col, decl in (("summary", "TEXT"), ("detail", "TEXT"), ("group_id", "TEXT"), ("session_id", "TEXT"), ("harness", "TEXT")):
+    for col, decl in (("summary", "TEXT"), ("detail", "TEXT"), ("group_id", "TEXT"), ("session_id", "TEXT"), ("harness", "TEXT"), ("updated_ms", "INTEGER")):
         if col not in cols:
             con.execute(f"ALTER TABLE work_unit ADD COLUMN {col} {decl}")
 
 
-def set_meta(con: sqlite3.Connection, key: str, value: str) -> None:    con.execute(
+def set_meta(con: sqlite3.Connection, key: str, value: str) -> None:
+    con.execute(
         "INSERT INTO meta(key, value) VALUES(?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (key, value),

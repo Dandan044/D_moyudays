@@ -10,12 +10,14 @@ import datetime as dt
 import json
 import sys
 
-from . import api, db, group
+from . import api, db, group, review
 
 PROTOCOL = "2024-11-05"
 SERVER = {"name": "worklog", "version": "0.1.0"}
 
 TOOLS = [
+    {"name": "worklog_audit", "description": "检查所有项目的标题、主题归属与卡片详情，返回待处理 ID。",
+     "inputSchema": {"type": "object", "properties": {}}},
     {
         "name": "worklog_list_units",
         "description": (
@@ -25,7 +27,7 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "project": {"type": "string", "description": "项目 id，如 LLMbox"},
+                "project": {"type": "string", "description": "当前机器上的项目 ID"},
                 "since": {"type": "string", "description": "只返回 end_day 不早于该日期的单元，YYYY-MM-DD"},
                 "only_ungrouped": {"type": "boolean", "description": "只返回尚未分组的单元"},
             },
@@ -136,6 +138,7 @@ TOOLS = [
                         "properties": {
                             "unit_id": {"type": "string"},
                             "headline": {"type": "string", "description": "一句话结论，30-70 字"},
+                            "title": {"type": "string", "description": "改写后的任务名称，写出对象和动作"},
                             "sections": {
                                 "type": "array",
                                 "items": {
@@ -148,7 +151,7 @@ TOOLS = [
                                 },
                             },
                         },
-                        "required": ["unit_id", "headline"],
+                        "required": ["unit_id", "headline", "sections"],
                     },
                 }
             },
@@ -217,9 +220,11 @@ TOOLS = [
 ]
 
 
-def _call(name: str, args: dict) -> dict:
+def call_tool(name: str, args: dict) -> dict:
     con = db.connect()
     try:
+        if name == "worklog_audit":
+            return review.audit(con)
         if name == "worklog_list_units":
             units = group.list_units(
                 con,
@@ -266,13 +271,24 @@ def _call(name: str, args: dict) -> dict:
             with con:
                 db.ensure_columns(con)
                 for it in items:
+                    row = con.execute("SELECT title, masked, detail FROM work_unit WHERE id=?", (it.get("unit_id"),)).fetchone()
+                    if row is None:
+                        raise ValueError(f"未知任务 {it.get('unit_id')}")
+                    title = row["title"] if row["masked"] else it.get("title", row["title"])
+                    if not review.task_title(title):
+                        raise ValueError(f"{it['unit_id']} 需要可读的任务名称")
                     payload = {
                         "headline": it.get("headline") or "",
                         "sections": it.get("sections") or [],
                     }
+                    issues = review.detail_issues(title, payload)
+                    if issues:
+                        raise ValueError(f"{it['unit_id']} " + "、".join(issues))
+                    if it.get("title") or review.parse_detail(row["detail"]).get("title"):
+                        payload["title"] = title
                     cur = con.execute(
-                        "UPDATE work_unit SET detail=?, summary=COALESCE(summary, ?) WHERE id=?",
-                        (json.dumps(payload, ensure_ascii=False), payload["headline"], it.get("unit_id")),
+                        "UPDATE work_unit SET title=?, detail=?, summary=? WHERE id=?",
+                        (title, json.dumps(payload, ensure_ascii=False), payload["headline"], it["unit_id"]),
                     )
                     ok += cur.rowcount
             return {"updated": ok, "requested": len(items)}
@@ -376,6 +392,9 @@ def _call(name: str, args: dict) -> dict:
         con.close()
 
 
+_call = call_tool  # 兼容已有本机整理脚本
+
+
 def _handle(req: dict) -> dict | None:
     method = req.get("method")
     rid = req.get("id")
@@ -395,7 +414,7 @@ def _handle(req: dict) -> dict | None:
     if method == "tools/call":
         params = req.get("params") or {}
         try:
-            data = _call(params.get("name"), params.get("arguments") or {})
+            data = call_tool(params.get("name"), params.get("arguments") or {})
             return {
                 "content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False, indent=1)}],
                 "isError": False,

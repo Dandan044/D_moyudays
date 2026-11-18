@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pathlib
+import ntpath
+import os
 
 CODE_EXT = {
     ".py", ".pyw", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue",
@@ -25,10 +27,11 @@ def norm_path(p: str | None) -> str:
     if not p:
         return ""
     p = p.strip().strip('"').strip("'")
+    windows_path = os.name == "nt" or bool(ntpath.splitdrive(p)[0])
     p = p.replace("/", "\\")
     while len(p) > 3 and p.endswith("\\"):
         p = p[:-1]
-    return p.lower()
+    return p.lower() if windows_path else p
 
 
 class ProjectResolver:

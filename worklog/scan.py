@@ -15,6 +15,7 @@ import sqlite3
 import tempfile
 
 from . import db, group, normalize
+from .review import parse_detail
 
 # 活动块粒度：30 分钟没动作就算断开（只是给 LLM 看的候选，不是最终任务边界）
 BLOCK_GAP_MS = 30 * 60 * 1000
@@ -30,7 +31,8 @@ def _make_blocks(items: list[dict]) -> list[dict]:
         b = batches.setdefault(
             bid, {"batch_id": bid, "ts": it["ts"], "day": it["day"], "files": [], "add": 0, "del": 0}
         )
-        b["files"].append(it["file"])
+        if it["file"]:
+            b["files"].append(it["file"])
         b["add"] += it["add"]
         b["del"] += it["del"]
     ordered = sorted(batches.values(), key=lambda b: b["ts"])
@@ -263,7 +265,7 @@ def scan(verbose: bool = True) -> dict:
                     " files, additions, deletions, batch_ids) VALUES(?,?,?,?,?,?,?,?,?)",
                     (
                         f"{sid}:{b['block_id']}", sid, b["day"], b["start_ts"], b["end_ts"],
-                        json.dumps([f.split("\\")[-1] for f in b["files"]][:8], ensure_ascii=False),
+                        json.dumps([f.replace("\\", "/").rsplit("/", 1)[-1] for f in b["files"]][:8], ensure_ascii=False),
                         b["add"], b["del"], json.dumps(b["batch_ids"]),
                     ),
                 )
@@ -296,10 +298,21 @@ def scan(verbose: bool = True) -> dict:
                 uid = sid if not multi else f"{sid}#{idx}"
                 for it in items:
                     it["uid"] = uid
-                paths = [i["file"] for i in items]
+                paths = [i["file"] for i in items if i["file"]]
                 project_id = resolver.primary(paths, s["cwd"])
+                override = config.get("unit_projects", {}).get(uid)
+                if override in resolver.projects or override == resolver.misc["id"]:
+                    project_id = override
                 kind = normalize.classify(paths)
                 days = [i["day"] for i in items if i["day"]]
+                updated_ms = max((i["ts"] for i in items), default=0)
+                if not multi:
+                    session_time = s.get("last_activity_at") or s.get("updated_at") or s["created_at"]
+                    updated_ms = max(updated_ms, session_time or 0)
+                    if not days and s["created_at"]:
+                        days.append(_day(s["created_at"]))
+                    if updated_ms:
+                        days.append(_day(updated_ms))
                 if days:
                     start_day, end_day = min(days), max(days)
                 else:
@@ -318,7 +331,7 @@ def scan(verbose: bool = True) -> dict:
                     md = f"{int(start_day[5:7])}/{int(start_day[8:10])}" if start_day else ""
                     base_title = f"{md} {s['title']}"
                 title, masked = normalize.mask_title(base_title, bool(proj and proj["sensitive"]))
-                no_artifacts = not items
+                no_artifacts = not paths
                 # 只按"没能归到任何项目"来标记，标题像不像杂事交给 LLM 归组时判断
                 is_noise = int(project_id == resolver.misc["id"] and no_artifacts)
                 units.append(
@@ -331,6 +344,7 @@ def scan(verbose: bool = True) -> dict:
                         "kind": kind,
                         "start_day": start_day,
                         "end_day": end_day,
+                        "updated_ms": updated_ms or None,
                         "span_days": span,
                         "active_days": active,
                         "max_streak": streak,
@@ -348,12 +362,12 @@ def scan(verbose: bool = True) -> dict:
             con.execute(
                 """INSERT INTO work_unit(id,session_id,title,project_id,kind,start_day,end_day,span_days,
                     active_day_count,max_streak,active_days,file_count,additions,deletions,
-                    is_noise,masked,raw_title,harness) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    is_noise,masked,raw_title,harness,updated_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     u["id"], u["session_id"], u["title"], u["project_id"], u["kind"], u["start_day"],
                     u["end_day"], u["span_days"], len(u["active_days"]), u["max_streak"],
                     json.dumps(u["active_days"]), u["file_count"], u["additions"], u["deletions"],
-                    u["is_noise"], u["masked"], u["raw_title"], u["harness"],
+                    u["is_noise"], u["masked"], u["raw_title"], u["harness"], u["updated_ms"],
                 ),
             )
 
@@ -366,9 +380,10 @@ def scan(verbose: bool = True) -> dict:
 
         # 摘要/详情按仍然存在的单元回填（拆段后 id 变了的由 LLM 重新生成）
         for uid, (summary, detail) in prev_notes.items():
+            edited_title = parse_detail(detail).get("title")
             con.execute(
-                "UPDATE work_unit SET summary=?, detail=? WHERE id=? AND summary IS NULL",
-                (summary, detail, uid),
+                "UPDATE work_unit SET summary=?, detail=?, title=CASE WHEN masked=0 THEN COALESCE(?,title) ELSE title END WHERE id=?",
+                (summary, detail, edited_title, uid),
             )
 
         group.reattach(con)

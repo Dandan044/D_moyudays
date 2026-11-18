@@ -10,20 +10,23 @@
 
 纯本地、只读 workbuddy 数据、零第三方依赖（只用 Python 标准库）。
 
-## 一句话跑起来
+## 给 agent 的一句话
+
+> 请获取 <https://github.com/Dandan044/D_moyudays>，按仓库根目录 SKILL.md 整理这台机器上的 AI 工作记录，验收后生成可离线打开的工作记录网页。
+
+需要能读取本机日志、执行终端命令的 agent，以及 Python 3.10 或更高版本。已有仓库可以直接使用。Windows 上可用 `py -3`，macOS 或 Linux 上可用 `python3`。生成网页只用 Python 标准库和仓库自带的前端。
 
 ```bash
-git clone https://github.com/Dandan044/D_moyudays.git && cd D_moyudays && python run.py
+git clone https://github.com/Dandan044/D_moyudays.git
+cd D_moyudays
+python -X utf8 run.py --prepare-only
 ```
 
-`run.py` 只做机械部分：建库 → 扫描 workbuddy → 发现项目 → 起服务 → 开浏览器（`127.0.0.1:8720`）。
+准备命令导入能识别的来源、发现项目、扫描并退出。agent 接着按 [SKILL.md](SKILL.md) 核对来源，从原会话提炼任务、主题和详情。普通终端即可通过 `python -X utf8 -m worklog.cli call --help` 使用与 MCP 相同的整理工具。
 
-**它不替你切分任务、不替你归组**——跑完你看到的还是"一个会话一条"，可读性很差。
-真正的整理要看 [SKILL.md](SKILL.md) 的七步工作流：找 harness → 现场写脚本解析 → 切段 → 归组 → 写详情。
+验收用 `python -X utf8 -m worklog.cli audit`，固定交付文件用 `python -X utf8 -m worklog.cli export --output "data/工作记录.html"`。双击即可离线打开。交互预览也可用 `python -m worklog.cli serve`。迁移时只需仓库文件，各台机器分别生成自己的配置、数据库和网页。运行 `python -X utf8 -m unittest discover -s tests -v` 可复验隔离样例。
 
-不需要 `pip install`，不需要预先填任何路径。要求 Python 3.10+。
-
-清空重来：删掉 `data/` 和 `config/projects.json` 再跑一次。
+迁移测试在独立的用户目录和仓库副本中生成样例，覆盖空库、两个来源、分组详情及重复更新。设置 `WORKLOG_TEST_CHROME` 为本机 Chrome 或 Chromium 的可执行文件路径，可连同离线网页的实际渲染一起验证。
 
 ## 它怎么工作
 
@@ -32,8 +35,8 @@ git clone https://github.com/Dandan044/D_moyudays.git && cd D_moyudays && python
 ~/.workbuddy/workbuddy.db            会话标题、cwd、时间（只读打开）
 ~/.claude  ~/.codex  ~/.cursor …     其它 harness（probe 探测 → 模型归一 → ingest 导入）
               ↓  scan
-         工作段（session 内按停顿切分，跨天且 >4h 才切）
-              ↓  模型判断（可选，通过 MCP）
+         会话与活动块（供 agent 依据上下文判断任务边界）
+              ↓  agent 整理（CLI 或 MCP）
          分组（哪些段其实是同一件事）
               ↓
          网页：甘特 + 卡片 + 成就 + 时段分布
@@ -46,8 +49,8 @@ git clone https://github.com/Dandan044/D_moyudays.git && cd D_moyudays && python
 
 - **两个筛选器**：来源（workbuddy / claude-code / … / 全部来源）× 项目（全部 / 单个），可任意组合
 - **顶部统计**：累计在岗小时、累计改动行、工作单元数、活跃天数，最后更新时间
-- **泳道甘特**：左新右旧，横条是任务段的实际跨度；没记录的周末折叠成窄条，跨周末的条会连起来
-- **条带 / 热力**两种形态：条带按产出类型上色，热力按改动文件数从白到紫
+- **泳道甘特**按天从新到旧排列，条带两端对齐当天的实际时刻。向右滚动可查看更早的活动，左侧始终显示对应的项目和任务名。
+- **类型 / 工作量**两种配色，默认用白、红、紫表示每小时变更文件数。色轴上的文件数按指数递增，让常见的小改动也有可辨的色差。纯白表示零产出，紫色对应当前视图中单个任务的小时峰值。
 - **成就行**：按日标注 🌅早开工 🌇晚收工 🔥马拉松 ⏳超长待机 💯爆发日 🎪多线并进 🐟摸鱼 等，悬停整列看当天全部成就
 - **每日柱状图**：与日期列对齐，柱高 = 当日改动数
 - **工作时段分布**：24 小时柱状，看一天里集中在几点
@@ -79,7 +82,7 @@ python -m worklog.cli ingest --file x.json   # 把解析结果导入（自动重
 }
 ```
 
-之后可以说：「把 LLMbox 的会话重新切分并归组」「给最近的任务段补上详情」。
+之后可以说：「把这个项目的会话重新切分并归组」「给最近的任务段补上详情」。
 
 工具：`worklog_list_sessions` / `list_blocks` / `apply_split`（切段）、`list_units` / `apply_groups`（归组）、`set_notes` / `set_detail`（写卡片）、`summary` / `scan`。
 
@@ -96,12 +99,12 @@ python -m worklog.cli report --project X --days 14   # 终端看报告
 
 ## 口径与限制
 
-- **项目匹配**按最长路径前缀，嵌套子仓库优先——所以 `LLMbox/BERT_.../ernie_xxx` 会独立成项目，不被父仓库吞并
-- **切段**只在跨天且停顿 >4h 时才切；同一天内做三件事不会被拆开（交给归组时区分）
+- **项目匹配**按最长路径前缀，嵌套子仓库优先归到对应的子项目。
+- 按会话内容判断任务边界，同一天内的不同目标也可以切成多段
 - **改动行数**含生成物（HTML 报告、数据集），会出现「+4 万行」，不代表手写量
-- **纯讨论**（没有文件变更）在图上是一条空心虚线，算「有工作但无产出」
-- `changes-index` 只覆盖 **2026-09-04 之后**，更早的日期只有会话、没有文件级记录
-- cwd 在临时目录的会话归「杂项」，默认不进「全部项目」视图
+- **纯讨论**进入工作单元、分组和详情卡片，文件产出计零。
+- 各来源按本机实际保留的历史统计。缺少日志的日期无法还原文件变更。
+- 临时目录中的任务可按实际归属指定项目；杂项也进入「全部项目」视图
 
 ## 目录结构
 
@@ -126,3 +129,11 @@ data/worklog.db            运行产物（不入库）
 
 服务只监听 `127.0.0.1`，`workbuddy.db` 以只读方式打开，`changes-index` 只读不写。
 `data/` 与 `config/projects.json` 都在 `.gitignore` 里——仓库里只有代码，没有任何个人记录。
+
+## 任务整理验收
+
+甘特图和卡片共用“项目 → 任务主题 → 工作单元”的层级。运行 `python -m worklog.cli audit` 可以查看全库尚缺标题、主题或详情的任务 ID。已有记录可通过 `worklog_set_detail` 同时更新标题、概括和具体经过，再用 `worklog_apply_groups` 写入主题。完整整理步骤见 [SKILL.md](SKILL.md)。
+
+甘特图保留日刻度、日期间距和固定左栏。连续有文件产出的日期共用一根条带，起止时刻按本地时间定位到日列内。条内逐小时着色，白色表示该小时无文件产出，整天无产出时条带断开。悬停可看对应小时与变更文件数。同一任务一小时内反复改同一文件计一次，主题取可见成员的同小时平均值。仅知日期的记录以斜线标示。运行 `python -m worklog.cli export` 将当前版本生成到 `data/` 下的独立 HTML。
+
+每次打开或刷新网页都显示近七天，可在顶栏切换时间范围。条带以各小时的实际工作量为颜色锚点，平滑过渡，悬停可查看该小时的读数。顶栏可在午夜蓝、墨松绿和暮光梅间切换，配色选择保存在当前浏览器中。首次完整生成后，工作流会分别询问定时更新频率和桌面快捷方式。定时更新优先使用宿主的调度功能。

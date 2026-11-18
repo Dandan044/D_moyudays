@@ -14,15 +14,22 @@
     <select id="projSel" class="projsel" aria-label="选择项目"></select>
   </div>
   <div class="spacer"></div>
-  <div class="modes" id="modes">
-    <button data-mode="bars" class="on">条带</button>
-    <button data-mode="heat">热力</button>
+  <label class="theme-control"><span>配色</span>
+    <select id="themeSel" aria-label="页面配色">
+      <option value="midnight">午夜蓝</option>
+      <option value="pine">墨松绿</option>
+      <option value="plum">暮光梅</option>
+    </select>
+  </label>
+  <div class="modes" id="modes" role="group" aria-label="条带颜色">
+    <button data-mode="bars" aria-pressed="false">类型</button>
+    <button data-mode="heat" aria-pressed="true" class="on">工作量</button>
   </div>
   <div class="ranges" id="ranges">
-    <button data-days="7">近 7 天</button>
-    <button data-days="14" class="on">近 14 天</button>
+    <button data-days="7" class="on">近 7 天</button>
+    <button data-days="14">近 14 天</button>
     <button data-days="28">近 28 天</button>
-    <button data-days="180">全部</button>
+    <button data-days="0">全部</button>
   </div>
 </header>
 
@@ -34,8 +41,16 @@
 <section class="legend" id="legend"></section>
 
 <section class="ganttwrap" id="ganttwrap">
-  <div class="gantt" id="gantt"></div>
+  <div class="modes grouping" id="grouping" role="group" aria-label="主题排序方式">
+    <button data-order="project" aria-pressed="true" class="on">按项目</button>
+    <button data-order="recent" aria-pressed="false">跨项目按更新</button>
+  </div>
+  <div class="gantt" id="taskRail"></div>
+  <div class="timeline-scroll" id="timelineScroll" tabindex="0" role="region" aria-label="按天排列的任务时间轴">
+    <div class="gantt" id="gantt"></div>
+  </div>
 </section>
+<div class="tipbox" id="tipInner" hidden></div>
 
 <section class="charts">
   <div class="panel">
